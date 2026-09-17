@@ -26,7 +26,7 @@ dependencies = [
 
 [[package]]
 name = "elevate-ti"
-version = "2026.9.171636"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "sysinfo",

@@ -5,7 +5,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use windows::core::{PCWSTR, w};
 
-use crate::primitives::{
+use crate::security::{
     Privilege, ProcessSpawner, ProcessToken, ServiceManager, TokenType, find_process_id_by_name,
 };
 

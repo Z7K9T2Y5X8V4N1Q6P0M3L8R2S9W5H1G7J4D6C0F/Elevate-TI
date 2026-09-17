@@ -10,11 +10,11 @@ use windows::{
     Win32::{
         Foundation::{CloseHandle, GetLastError, HANDLE, LUID},
         Security::{
-            AdjustTokenPrivileges, DuplicateTokenEx, GetTokenInformation, ImpersonateLoggedOnUser,
-            LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, RevertToSelf, SE_PRIVILEGE_ENABLED,
-            SecurityImpersonation, TOKEN_ACCESS_MASK, TOKEN_ADJUST_PRIVILEGES, TOKEN_ALL_ACCESS,
-            TOKEN_GROUPS, TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_TYPE, TokenGroups,
-            TokenImpersonation, TokenPrimary,
+            AdjustTokenPrivileges, DuplicateTokenEx, EqualSid, GetTokenInformation,
+            ImpersonateLoggedOnUser, LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, PSID,
+            RevertToSelf, SE_PRIVILEGE_ENABLED, SecurityImpersonation, TOKEN_ACCESS_MASK,
+            TOKEN_ADJUST_PRIVILEGES, TOKEN_ALL_ACCESS, TOKEN_GROUPS, TOKEN_PRIVILEGES, TOKEN_QUERY,
+            TOKEN_TYPE, TokenGroups, TokenImpersonation, TokenPrimary,
         },
         System::{
             SystemServices::MAXIMUM_ALLOWED,
@@ -200,47 +200,68 @@ impl ProcessToken {
         Ok(())
     }
 
-    /// Check whether this token belongs to the given SID string.
+    /// Check whether this token holds membership in the specified SID string.
     pub fn contains_sid_string(&self, target_sid_string: PCWSTR) -> Result<bool> {
-        let mut buffer_size = 0u32;
-        let _ = unsafe { GetTokenInformation(self.handle, TokenGroups, None, 0, &mut buffer_size) };
-        if buffer_size == 0 {
-            return Err(anyhow!("Failed to query token group buffer size"));
+        let target_sid = Sid::parse(target_sid_string)?;
+        let groups = self.query_groups()?;
+
+        Ok(groups
+            .iter()
+            .any(|group_sid| are_sids_equal(group_sid, target_sid.raw())))
+    }
+
+    /// Safely query and retrieve all groups associated with this token.
+    fn query_groups(&self) -> Result<TokenGroupsBuffer> {
+        TokenGroupsBuffer::query_from_token(self.handle)
+    }
+}
+
+/// RAII wrapper managing the raw dynamic buffer holding a [`TOKEN_GROUPS`] structure.
+struct TokenGroupsBuffer {
+    buffer: Vec<u8>,
+}
+
+impl TokenGroupsBuffer {
+    /// Perform the Win32 two-phase query to populate token groups memory.
+    fn query_from_token(token_handle: HANDLE) -> Result<Self> {
+        let mut required_size = 0u32;
+        let _ =
+            unsafe { GetTokenInformation(token_handle, TokenGroups, None, 0, &mut required_size) };
+        if required_size == 0 {
+            return Err(anyhow!("Failed to query token groups memory size"));
         }
 
-        let mut groups_buffer = vec![0u8; buffer_size as usize];
+        let mut buffer = vec![0u8; required_size as usize];
         unsafe {
             GetTokenInformation(
-                self.handle,
+                token_handle,
                 TokenGroups,
-                Some(groups_buffer.as_mut_ptr().cast()),
-                buffer_size,
-                &mut buffer_size,
+                Some(buffer.as_mut_ptr().cast()),
+                required_size,
+                &mut required_size,
             )
         }
-        .context("Failed to retrieve token groups")?;
+        .context("Failed to retrieve token groups information")?;
 
-        let token_groups = unsafe { &*(groups_buffer.as_ptr().cast::<TOKEN_GROUPS>()) };
-        let groups_slice = unsafe {
+        Ok(Self { buffer })
+    }
+
+    /// Expose safe borrowed references to each group `PSID`.
+    fn iter(&self) -> impl Iterator<Item = PSID> + '_ {
+        let token_groups = unsafe { &*(self.buffer.as_ptr().cast::<TOKEN_GROUPS>()) };
+        let slice = unsafe {
             std::slice::from_raw_parts(
                 token_groups.Groups.as_ptr(),
                 token_groups.GroupCount as usize,
             )
         };
-
-        let target_sid_wide = unsafe { target_sid_string.as_wide() };
-
-        for group in groups_slice {
-            if let Ok(group_sid_string) = Sid::to_string_from_raw(group.Sid) {
-                let group_wide: Vec<u16> = group_sid_string.encode_utf16().collect();
-                if group_wide == target_sid_wide {
-                    return Ok(true);
-                }
-            }
-        }
-
-        Ok(false)
+        slice.iter().map(|group| group.Sid)
     }
+}
+
+/// Helper function to perform binary equality check on two raw PSIDs via Win32 `EqualSid`.
+fn are_sids_equal(first_sid: PSID, second_sid: PSID) -> bool {
+    unsafe { EqualSid(first_sid, second_sid) }.is_ok()
 }
 
 /// RAII guard representing active thread impersonation.

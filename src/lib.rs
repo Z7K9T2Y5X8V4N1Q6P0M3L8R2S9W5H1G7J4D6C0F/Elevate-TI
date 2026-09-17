@@ -1,14 +1,17 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! A safe, idiomatic Rust library for obtaining Windows TrustedInstaller privileges.
+//!
+//! # Usage
+//! ```no_run
+//! use elevate_ti::{check_elevation_status, relaunch_as_trusted_installer, ElevationStatus};
+//!
+//! if check_elevation_status().unwrap() == ElevationStatus::RequiresElevation {
+//!     relaunch_as_trusted_installer().unwrap();
+//!     return;
+//! }
+//! ```
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub mod primitives;
+mod relaunch;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use primitives::{Privilege, ProcessSpawner, ProcessToken, TokenType};
+pub use relaunch::{ElevationStatus, check_elevation_status, relaunch_as_trusted_installer};

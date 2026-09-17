@@ -2,5 +2,23 @@
 name = "elevate-ti"
 version = "0.1.0"
 edition = "2024"
+description = "A safe, idiomatic Rust library to obtain Windows TrustedInstaller privileges and relaunch processes"
+repository = "https://github.com/Z7K9T2Y5X8V4N1Q6P0M3L8R2S9W5H1G7J4D6C0F/Elevate-TI"
+license = "MIT"
 
 [dependencies]
+anyhow = "1.0"
+sysinfo = "0.39"
+
+[dependencies.windows]
+version = "0.58"
+features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_System_Environment",
+  "Win32_System_Services",
+  "Win32_System_SystemServices",
+  "Win32_System_Threading",
+  "Win32_UI_WindowsAndMessaging",
+]

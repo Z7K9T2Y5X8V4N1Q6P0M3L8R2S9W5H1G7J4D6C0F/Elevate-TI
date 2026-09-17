@@ -105,10 +105,10 @@ impl<'a> ProcessSpawner<'a> {
         }
 
         creation_result.with_context(|| {
-            let win32_error = unsafe { GetLastError() };
+            let last_os_error = unsafe { GetLastError() };
             format!(
                 "CreateProcessWithTokenW failed (Win32 Error: 0x{:08X})",
-                win32_error.0
+                last_os_error.0
             )
         })?;
 

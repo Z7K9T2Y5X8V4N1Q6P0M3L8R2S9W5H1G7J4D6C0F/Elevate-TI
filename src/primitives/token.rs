@@ -93,10 +93,10 @@ impl ProcessToken {
     pub fn from_process_id(process_id: u32) -> Result<Self> {
         let process_handle = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION, false, process_id) }
             .with_context(|| {
-            let win32_error = unsafe { GetLastError() };
+            let last_os_error = unsafe { GetLastError() };
             format!(
                 "OpenProcess failed for PID {process_id} (Win32 Error: 0x{:08X})",
-                win32_error.0
+                last_os_error.0
             )
         })?;
 
@@ -189,11 +189,11 @@ impl ProcessToken {
         }
         .context("AdjustTokenPrivileges failed")?;
 
-        let win32_error = unsafe { GetLastError() };
-        if win32_error.is_err() {
+        let last_os_error = unsafe { GetLastError() };
+        if last_os_error.is_err() {
             return Err(anyhow!(
                 "AdjustTokenPrivileges error: 0x{:08X}",
-                win32_error.0
+                last_os_error.0
             ));
         }
 

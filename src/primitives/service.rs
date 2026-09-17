@@ -114,8 +114,8 @@ impl ServiceHandle {
                 SERVICE_STOPPED => {
                     let start_result = unsafe { StartServiceW(self.handle, None) };
                     if let Err(error) = start_result {
-                        let win32_error = unsafe { GetLastError() };
-                        if win32_error != ERROR_SERVICE_ALREADY_RUNNING {
+                        let last_os_error = unsafe { GetLastError() };
+                        if last_os_error != ERROR_SERVICE_ALREADY_RUNNING {
                             return Err(anyhow!("Failed to start service: {error}"));
                         }
                     }

@@ -10,8 +10,8 @@
 //! }
 //! ```
 
-pub mod primitives;
-mod relaunch;
+mod elevation;
+pub mod security;
 
-pub use primitives::{Privilege, ProcessSpawner, ProcessToken, TokenType};
-pub use relaunch::{ElevationStatus, check_elevation_status, relaunch_as_trusted_installer};
+pub use elevation::{ElevationStatus, check_elevation_status, relaunch_as_trusted_installer};
+pub use security::{Privilege, ProcessSpawner, ProcessToken, TokenType};

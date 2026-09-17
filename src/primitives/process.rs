@@ -3,7 +3,7 @@
 //! Provides [`ProcessSpawner`] to launch executables under custom security
 //! tokens, and process enumeration utilities powered by `sysinfo`.
 
-use std::{env, ffi::OsStr, mem, os::windows::ffi::OsStrExt, path::PathBuf, ptr};
+use std::{env, mem, path::PathBuf, ptr};
 
 use anyhow::{Context, Result, anyhow};
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
@@ -19,7 +19,7 @@ use windows::{
         },
         UI::WindowsAndMessaging::SW_SHOWNORMAL,
     },
-    core::{PCWSTR, PWSTR},
+    core::{HSTRING, PCWSTR, PWSTR},
 };
 
 use super::token::ProcessToken;
@@ -28,7 +28,7 @@ use super::token::ProcessToken;
 pub struct ProcessSpawner<'a> {
     token: &'a ProcessToken,
     executable_path: Option<PathBuf>,
-    desktop: String,
+    desktop: HSTRING,
 }
 
 impl<'a> ProcessSpawner<'a> {
@@ -37,7 +37,7 @@ impl<'a> ProcessSpawner<'a> {
         Self {
             token,
             executable_path: None,
-            desktop: "WinSta0\\Default".to_string(),
+            desktop: HSTRING::from("WinSta0\\Default"),
         }
     }
 
@@ -50,7 +50,7 @@ impl<'a> ProcessSpawner<'a> {
 
     /// Set the target desktop station name.
     pub fn desktop(mut self, desktop_name: &str) -> Self {
-        self.desktop = desktop_name.to_string();
+        self.desktop = HSTRING::from(desktop_name);
         self
     }
 
@@ -60,19 +60,23 @@ impl<'a> ProcessSpawner<'a> {
             .executable_path
             .ok_or_else(|| anyhow!("Target executable path was not specified"))?;
 
-        let mut environment_block: *mut std::ffi::c_void = ptr::null_mut();
+        let mut environment_block = ptr::null_mut();
         let _ = unsafe { CreateEnvironmentBlock(&mut environment_block, self.token.raw(), false) };
 
-        let mut command_line = encode_wide_string(&format!("\"{}\"", exe_path.display()));
+        // Win32 CreateProcess expects a mutable PWSTR buffer for lpCommandLine,
+        // so we format the quoted string directly with a trailing null terminator.
+        let mut command_line_buffer: Vec<u16> = format!("\"{}\"\0", exe_path.display())
+            .encode_utf16()
+            .collect();
 
         let current_directory =
             env::current_dir().context("Failed to retrieve current working directory")?;
-        let current_directory_wide = encode_wide_os_str(current_directory.as_os_str());
+        let current_directory_hstring = HSTRING::from(current_directory.as_os_str());
 
-        let mut desktop_name = encode_wide_string(&self.desktop);
-        let startup_info = STARTUPINFOW {
+        // HSTRING provides PCWSTR automatically via as_ptr(), cast to mutable for lpDesktop.
+        let mut startup_info = STARTUPINFOW {
             cb: mem::size_of::<STARTUPINFOW>() as u32,
-            lpDesktop: PWSTR(desktop_name.as_mut_ptr()),
+            lpDesktop: PWSTR(self.desktop.as_ptr().cast_mut()),
             dwFlags: STARTF_USESHOWWINDOW,
             wShowWindow: SW_SHOWNORMAL.0 as u16,
             ..Default::default()
@@ -85,11 +89,11 @@ impl<'a> ProcessSpawner<'a> {
                 self.token.raw(),
                 LOGON_WITH_PROFILE,
                 PCWSTR::null(),
-                PWSTR(command_line.as_mut_ptr()),
+                PWSTR(command_line_buffer.as_mut_ptr()),
                 CREATE_UNICODE_ENVIRONMENT,
                 Some(environment_block),
-                PCWSTR(current_directory_wide.as_ptr()),
-                &startup_info,
+                &current_directory_hstring,
+                &mut startup_info,
                 &mut process_information,
             )
         };
@@ -138,12 +142,4 @@ pub fn find_process_id_by_name(target_process_name: &str) -> Result<u32> {
             }
         })
         .ok_or_else(|| anyhow!("Process '{target_process_name}' not found in active processes"))
-}
-
-fn encode_wide_string(value: &str) -> Vec<u16> {
-    value.encode_utf16().chain(Some(0)).collect()
-}
-
-fn encode_wide_os_str(value: &OsStr) -> Vec<u16> {
-    value.encode_wide().chain(Some(0)).collect()
 }

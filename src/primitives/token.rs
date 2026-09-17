@@ -13,8 +13,8 @@ use windows::{
             AdjustTokenPrivileges, DuplicateTokenEx, GetTokenInformation, ImpersonateLoggedOnUser,
             LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, RevertToSelf, SE_PRIVILEGE_ENABLED,
             SecurityImpersonation, TOKEN_ACCESS_MASK, TOKEN_ADJUST_PRIVILEGES, TOKEN_ALL_ACCESS,
-            TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_TYPE, TokenGroups, TokenImpersonation,
-            TokenPrimary,
+            TOKEN_GROUPS, TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_TYPE, TokenGroups,
+            TokenImpersonation, TokenPrimary,
         },
         System::{
             SystemServices::MAXIMUM_ALLOWED,
@@ -220,11 +220,7 @@ impl ProcessToken {
         }
         .context("Failed to retrieve token groups")?;
 
-        let token_groups = unsafe {
-            &*(groups_buffer
-                .as_ptr()
-                .cast::<windows::Win32::Security::TOKEN_GROUPS>())
-        };
+        let token_groups = unsafe { &*(groups_buffer.as_ptr().cast::<TOKEN_GROUPS>()) };
         let groups_slice = unsafe {
             std::slice::from_raw_parts(
                 token_groups.Groups.as_ptr(),

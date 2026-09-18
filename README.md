@@ -18,11 +18,11 @@ elevate-ti = { git = "https://github.com/Z7K9T2Y5X8V4N1Q6P0M3L8R2S9W5H1G7J4D6C0F
 ### Usage
 
 ```rust
-use elevate_ti::{check_elevation_status, relaunch_as_trusted_installer, ElevationStatus};
+use elevate_ti::{check_elevation_status, relaunch_as_trustedinstaller, ElevationStatus};
 
 fn main() -> anyhow::Result<()> {
     if check_elevation_status()? == ElevationStatus::RequiresElevation {
-        relaunch_as_trusted_installer()?;
+        relaunch_as_trustedinstaller()?;
         return Ok(());
     }
 

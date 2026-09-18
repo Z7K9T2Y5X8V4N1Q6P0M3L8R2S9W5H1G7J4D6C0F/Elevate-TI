@@ -8,7 +8,9 @@ use std::{mem, ptr};
 use anyhow::{Context, Result, anyhow};
 use windows::{
     Win32::{
-        Foundation::{CloseHandle, GetLastError, HANDLE, LUID},
+        Foundation::{
+            CloseHandle, ERROR_SUCCESS, GetLastError, HANDLE, LUID, SetLastError, WIN32_ERROR,
+        },
         Security::{
             AdjustTokenPrivileges, DuplicateTokenEx, EqualSid, GetTokenInformation,
             ImpersonateLoggedOnUser, LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, PSID,
@@ -92,11 +94,10 @@ impl ProcessToken {
     /// Open the security token belonging to a running process by its identifier.
     pub fn from_process_id(process_id: u32) -> Result<Self> {
         let process_handle = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION, false, process_id) }
-            .with_context(|| {
-            let last_os_error = unsafe { GetLastError() };
-            format!(
-                "OpenProcess failed for PID {process_id} (Win32 Error: 0x{:08X})",
-                last_os_error.0
+            .map_err(|windows_error| {
+            anyhow!(
+                "OpenProcess failed for PID {process_id} (Win32 Error: 0x{:08X}): {windows_error}",
+                windows_error.code().0
             )
         })?;
 
@@ -177,22 +178,26 @@ impl ProcessToken {
             }],
         };
 
-        unsafe {
+        // Reset the thread last-error before invocation because AdjustTokenPrivileges can
+        // return success while still setting ERROR_NOT_ALL_ASSIGNED.
+        unsafe { SetLastError(WIN32_ERROR(0)) };
+        let adjust_token_privilegs_result = unsafe {
             AdjustTokenPrivileges(
                 self.handle,
                 false,
-                Some(ptr::from_ref::<_>(&token_privileges)),
+                Some(ptr::from_ref(&token_privileges)),
                 mem::size_of::<TOKEN_PRIVILEGES>() as u32,
                 None,
                 None,
             )
-        }
-        .context("AdjustTokenPrivileges failed")?;
-
+        };
         let last_os_error = unsafe { GetLastError() };
-        if last_os_error.is_err() {
+
+        adjust_token_privilegs_result.context("AdjustTokenPrivileges call failed")?;
+
+        if last_os_error != ERROR_SUCCESS {
             return Err(anyhow!(
-                "AdjustTokenPrivileges error: 0x{:08X}",
+                "AdjustTokenPrivileges partial failure: 0x{:08X}",
                 last_os_error.0
             ));
         }

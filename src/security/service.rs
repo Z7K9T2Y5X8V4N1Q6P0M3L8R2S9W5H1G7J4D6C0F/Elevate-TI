@@ -12,7 +12,7 @@ use std::{
 use anyhow::{Context, Result, anyhow};
 use windows::{
     Win32::{
-        Foundation::{ERROR_SERVICE_ALREADY_RUNNING, GetLastError},
+        Foundation::ERROR_SERVICE_ALREADY_RUNNING,
         System::Services::{
             CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatusEx, SC_HANDLE,
             SC_MANAGER_CONNECT, SC_STATUS_PROCESS_INFO, SERVICE_QUERY_CONFIG, SERVICE_QUERY_STATUS,
@@ -113,10 +113,9 @@ impl ServiceHandle {
             match status.dwCurrentState {
                 SERVICE_STOPPED => {
                     let start_result = unsafe { StartServiceW(self.handle, None) };
-                    if let Err(error) = start_result {
-                        let last_os_error = unsafe { GetLastError() };
-                        if last_os_error != ERROR_SERVICE_ALREADY_RUNNING {
-                            return Err(anyhow!("Failed to start service: {error}"));
+                    if let Err(service_error) = start_result {
+                        if service_error.code() != ERROR_SERVICE_ALREADY_RUNNING.to_hresult() {
+                            return Err(anyhow!("Failed to start service: {service_error}"));
                         }
                     }
                     sleep(Duration::from_millis(100));

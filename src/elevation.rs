@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use windows::core::{PCWSTR, w};
 
 use crate::security::{
@@ -24,11 +24,9 @@ pub enum ElevationStatus {
 
 /// Check whether the current process holds the TrustedInstaller SID in its token groups.
 pub fn check_elevation_status() -> Result<ElevationStatus> {
-    let current_token = ProcessToken::current_process()
-        .context("Failed to open current process token for query")?;
+    let current_token = ProcessToken::current_process()?;
 
     let is_elevated = current_token.contains_sid_string(TRUSTED_INSTALLER_SID_STRING)?;
-
     if is_elevated {
         Ok(ElevationStatus::TrustedInstaller)
     } else {
@@ -37,7 +35,7 @@ pub fn check_elevation_status() -> Result<ElevationStatus> {
 }
 
 /// Restart the current application under the TrustedInstaller identity in the active user session.
-pub fn relaunch_as_trusted_installer() -> Result<()> {
+pub fn relaunch_as_trustedinstaller() -> Result<()> {
     // 1. Enable administrative debugging and impersonation privileges.
     ProcessToken::current_process()?
         .enable_privileges(&[Privilege::Debug, Privilege::Impersonate])?;

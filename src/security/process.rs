@@ -9,7 +9,7 @@ use anyhow::{Context, Result, anyhow};
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
 use windows::{
     Win32::{
-        Foundation::{CloseHandle, GetLastError},
+        Foundation::CloseHandle,
         System::{
             Environment::{CreateEnvironmentBlock, DestroyEnvironmentBlock},
             Threading::{
@@ -104,11 +104,10 @@ impl<'a> ProcessSpawner<'a> {
             }
         }
 
-        creation_result.with_context(|| {
-            let last_os_error = unsafe { GetLastError() };
-            format!(
-                "CreateProcessWithTokenW failed (Win32 Error: 0x{:08X})",
-                last_os_error.0
+        creation_result.map_err(|windows_error| {
+            anyhow!(
+                "CreateProcessWithTokenW failed (Win32 Error: 0x{:08X}): {windows_error}",
+                windows_error.code().0
             )
         })?;
 

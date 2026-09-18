@@ -13,5 +13,5 @@
 mod elevation;
 pub mod security;
 
-pub use elevation::{ElevationStatus, check_elevation_status, relaunch_as_trusted_installer};
+pub use elevation::{ElevationStatus, check_elevation_status, relaunch_as_trustedinstaller};
 pub use security::{Privilege, ProcessSpawner, ProcessToken, TokenType};

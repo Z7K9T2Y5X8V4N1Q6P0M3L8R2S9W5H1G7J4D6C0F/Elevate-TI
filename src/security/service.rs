@@ -95,7 +95,7 @@ impl ServiceHandle {
 
             let status_slice = unsafe {
                 std::slice::from_raw_parts_mut(
-                    ptr::from_mut::<SERVICE_STATUS_PROCESS>(&mut status).cast::<u8>(),
+                    ptr::from_mut(&mut status).cast(),
                     mem::size_of::<SERVICE_STATUS_PROCESS>(),
                 )
             };

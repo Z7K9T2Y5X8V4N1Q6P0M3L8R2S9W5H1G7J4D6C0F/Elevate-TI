@@ -10,7 +10,7 @@ use crate::security::{
 };
 
 /// TrustedInstaller Service Well-Known SID string (`NT SERVICE\TrustedInstaller`).
-const TRUSTED_INSTALLER_SID_STRING: PCWSTR =
+const TRUSTEDINSTALLER_SID_STRING: PCWSTR =
     w!("S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464");
 
 /// The elevation status of the current process instance.
@@ -26,7 +26,7 @@ pub enum ElevationStatus {
 pub fn check_elevation_status() -> Result<ElevationStatus> {
     let current_token = ProcessToken::current_process()?;
 
-    let is_elevated = current_token.contains_sid_string(TRUSTED_INSTALLER_SID_STRING)?;
+    let is_elevated = current_token.contains_sid_string(TRUSTEDINSTALLER_SID_STRING)?;
     if is_elevated {
         Ok(ElevationStatus::TrustedInstaller)
     } else {
@@ -41,7 +41,7 @@ pub fn relaunch_as_trustedinstaller() -> Result<()> {
         .enable_privileges(&[Privilege::Debug, Privilege::Impersonate])?;
 
     // 2. Ensure TrustedInstaller service is running and fetch its PID.
-    let trusted_installer_process_id = ServiceManager::open()?
+    let trustedinstaller_process_id = ServiceManager::open()?
         .open_service(w!("TrustedInstaller"))?
         .start_and_wait(Duration::from_secs(30))?;
 
@@ -53,8 +53,7 @@ pub fn relaunch_as_trustedinstaller() -> Result<()> {
             .impersonate()?;
 
         // While executing under SYSTEM identity, duplicate TrustedInstaller's primary token.
-        ProcessToken::from_process_id(trusted_installer_process_id)?
-            .duplicate(TokenType::Primary)?
+        ProcessToken::from_process_id(trustedinstaller_process_id)?.duplicate(TokenType::Primary)?
     };
 
     // 4. Spawn the elevated instance on the interactive desktop.

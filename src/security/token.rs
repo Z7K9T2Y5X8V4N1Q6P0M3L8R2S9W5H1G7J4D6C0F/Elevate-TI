@@ -16,7 +16,7 @@ use windows::{
             ImpersonateLoggedOnUser, LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, PSID,
             RevertToSelf, SE_PRIVILEGE_ENABLED, SecurityImpersonation, TOKEN_ACCESS_MASK,
             TOKEN_ADJUST_PRIVILEGES, TOKEN_ALL_ACCESS, TOKEN_GROUPS, TOKEN_PRIVILEGES, TOKEN_QUERY,
-            TOKEN_TYPE, TokenGroups, TokenImpersonation, TokenPrimary,
+            TOKEN_TYPE, TOKEN_USER, TokenGroups, TokenImpersonation, TokenPrimary, TokenUser,
         },
         System::{
             SystemServices::MAXIMUM_ALLOWED,
@@ -203,6 +203,30 @@ impl ProcessToken {
         }
 
         Ok(())
+    }
+
+    /// Retrieve the owner user SID string of this token.
+    pub fn query_user_sid_string(&self) -> Result<String> {
+        let mut required_size = 0u32;
+        let _ = unsafe { GetTokenInformation(self.handle, TokenUser, None, 0, &mut required_size) };
+        if required_size == 0 {
+            return Err(anyhow!("Failed to query token user size"));
+        }
+
+        let mut buffer = vec![0u8; required_size as usize];
+        unsafe {
+            GetTokenInformation(
+                self.handle,
+                TokenUser,
+                Some(buffer.as_mut_ptr().cast()),
+                required_size,
+                &mut required_size,
+            )
+        }
+        .context("Failed to retrieve token user information")?;
+
+        let token_user = unsafe { &*(buffer.as_ptr().cast::<TOKEN_USER>()) };
+        Sid::to_string_from_raw(token_user.User.Sid)
     }
 
     /// Check whether this token holds membership in the specified SID string.

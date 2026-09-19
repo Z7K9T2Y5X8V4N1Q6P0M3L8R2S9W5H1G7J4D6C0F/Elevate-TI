@@ -47,15 +47,15 @@ impl Sid {
 
     /// Convert a raw `PSID` into its standard string representation.
     pub fn to_string_from_raw(raw_sid: PSID) -> Result<String> {
-        let mut string_pointer = PWSTR::null();
-        unsafe { ConvertSidToStringSidW(raw_sid, &mut string_pointer) }
+        let mut sid_pwstr = PWSTR::null();
+        unsafe { ConvertSidToStringSidW(raw_sid, &mut sid_pwstr) }
             .context("ConvertSidToStringSidW failed")?;
 
-        let sid_string = unsafe { string_pointer.to_string() }
+        let sid_string = unsafe { sid_pwstr.to_string() }
             .context("Failed to parse SID string buffer as UTF-8")?;
 
         unsafe {
-            let _ = LocalFree(HLOCAL(string_pointer.0.cast()));
+            let _ = LocalFree(HLOCAL(sid_pwstr.0.cast()));
         }
 
         Ok(sid_string)

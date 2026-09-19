@@ -24,6 +24,9 @@ use windows::{
 
 use super::token::ProcessToken;
 
+/// Well-Known Local System Account SID (`NT AUTHORITY\SYSTEM`).
+const LOCAL_SYSTEM_SID: &str = "S-1-5-18";
+
 /// Fluent builder for launching a process using a duplicated primary token.
 pub struct ProcessSpawner<'a> {
     token: &'a ProcessToken,
@@ -120,7 +123,10 @@ impl<'a> ProcessSpawner<'a> {
     }
 }
 
-/// Find a process ID by its executable name using `sysinfo`.
+/// Find a genuine SYSTEM process ID by its executable name.
+///
+/// Matches the process name and validates that the process belongs to `NT AUTHORITY\SYSTEM` (S-1-5-18),
+/// preventing spoofed user processes from hijacking elevation flow.
 pub fn find_process_id_by_name(target_process_name: &str) -> Result<u32> {
     let mut system_monitor = System::new();
     system_monitor.refresh_processes_specifics(
@@ -134,11 +140,20 @@ pub fn find_process_id_by_name(target_process_name: &str) -> Result<u32> {
         .iter()
         .find_map(|(process_id, process)| {
             let process_name = process.name().to_string_lossy();
-            if process_name.eq_ignore_ascii_case(target_process_name) {
-                Some(process_id.as_u32())
+            if !process_name.eq_ignore_ascii_case(target_process_name) {
+                return None;
+            }
+
+            let candidate_pid = process_id.as_u32();
+
+            let token = ProcessToken::from_process_id(candidate_pid).ok()?;
+            let user_sid = token.query_user_sid_string().ok()?;
+
+            if user_sid == LOCAL_SYSTEM_SID {
+                Some(candidate_pid)
             } else {
                 None
             }
         })
-        .ok_or_else(|| anyhow!("Process '{target_process_name}' not found in active processes"))
+        .ok_or_else(|| anyhow!("Genuine SYSTEM process '{target_process_name}' not found"))
 }

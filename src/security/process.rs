@@ -59,7 +59,7 @@ impl<'a> ProcessSpawner<'a> {
 
     /// Spawn the target process under the elevated token.
     pub fn spawn(self) -> Result<()> {
-        let exe_path = self
+        let executable_path = self
             .executable_path
             .ok_or_else(|| anyhow!("Target executable path was not specified"))?;
 
@@ -68,7 +68,7 @@ impl<'a> ProcessSpawner<'a> {
 
         // Win32 CreateProcess expects a mutable PWSTR buffer for lpCommandLine,
         // so we format the quoted string directly with a trailing null terminator.
-        let mut command_line_buffer: Vec<u16> = format!("\"{}\"\0", exe_path.display())
+        let mut command_line_buffer: Vec<u16> = format!("\"{}\"\0", executable_path.display())
             .encode_utf16()
             .collect();
 

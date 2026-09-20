@@ -3,7 +3,13 @@
 //! Provides [`ProcessSpawner`] to launch executables under custom security
 //! tokens, and process enumeration utilities powered by `sysinfo`.
 
-use std::{env, mem, path::PathBuf, ptr};
+use std::{
+    env,
+    ffi::c_void,
+    mem,
+    path::PathBuf,
+    ptr::{self},
+};
 
 use anyhow::{Context, Result, anyhow};
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
@@ -63,11 +69,10 @@ impl<'a> ProcessSpawner<'a> {
             .executable_path
             .ok_or_else(|| anyhow!("Target executable path was not specified"))?;
 
-        let mut environment_block = ptr::null_mut();
-        let _ = unsafe { CreateEnvironmentBlock(&mut environment_block, self.token.raw(), false) };
+        // 1. Create an environment block RAII guard for the target token.
+        let environment_block_guard = EnvironmentBlockGuard::create(self.token)?;
 
-        // Win32 CreateProcess expects a mutable PWSTR buffer for lpCommandLine,
-        // so we format the quoted string directly with a trailing null terminator.
+        // 2. Format the command line with standard quoting and null-terminator.
         let mut command_line_buffer: Vec<u16> = format!("\"{}\"\0", executable_path.display())
             .encode_utf16()
             .collect();
@@ -76,7 +81,6 @@ impl<'a> ProcessSpawner<'a> {
             env::current_dir().context("Failed to retrieve current working directory")?;
         let current_directory_hstring = HSTRING::from(current_directory.as_os_str());
 
-        // HSTRING provides PCWSTR automatically via as_ptr(), cast to mutable for lpDesktop.
         let mut startup_info = STARTUPINFOW {
             cb: mem::size_of::<STARTUPINFOW>() as u32,
             lpDesktop: PWSTR(self.desktop.as_ptr().cast_mut()),
@@ -85,40 +89,31 @@ impl<'a> ProcessSpawner<'a> {
             ..Default::default()
         };
 
-        let mut process_information = PROCESS_INFORMATION::default();
+        // 3. Prepare the process information RAII guard to hold output handles.
+        let mut process_information_guard = ProcessInformationGuard::default();
 
-        let creation_result = unsafe {
+        unsafe {
             CreateProcessWithTokenW(
                 self.token.raw(),
                 LOGON_WITH_PROFILE,
                 PCWSTR::null(),
                 PWSTR(command_line_buffer.as_mut_ptr()),
                 CREATE_UNICODE_ENVIRONMENT,
-                Some(environment_block),
+                environment_block_guard.as_raw_ptr(),
                 &current_directory_hstring,
                 &mut startup_info,
-                &mut process_information,
+                process_information_guard.as_raw_mut(),
             )
-        };
-
-        if !environment_block.is_null() {
-            unsafe {
-                let _ = DestroyEnvironmentBlock(environment_block);
-            }
         }
-
-        creation_result.map_err(|windows_error| {
+        .map_err(|windows_error| {
             anyhow!(
                 "CreateProcessWithTokenW failed (Win32 Error: 0x{:08X}): {windows_error}",
                 windows_error.code().0
             )
         })?;
 
-        unsafe {
-            let _ = CloseHandle(process_information.hProcess);
-            let _ = CloseHandle(process_information.hThread);
-        }
-
+        // Both environment_block_guard and process_information_guard will
+        // automatically drop and release their underlying Win32 resources cleanly here.
         Ok(())
     }
 }
@@ -156,4 +151,65 @@ pub fn find_process_id_by_name(target_process_name: &str) -> Result<u32> {
             }
         })
         .ok_or_else(|| anyhow!("Genuine SYSTEM process '{target_process_name}' not found"))
+}
+
+/// RAII guard wrapping an environment block allocated by `CreateEnvironmentBlock`.
+struct EnvironmentBlockGuard {
+    block: *mut c_void,
+}
+
+impl Drop for EnvironmentBlockGuard {
+    fn drop(&mut self) {
+        if !self.block.is_null() {
+            unsafe {
+                let _ = DestroyEnvironmentBlock(self.block);
+            }
+        }
+    }
+}
+
+impl EnvironmentBlockGuard {
+    /// Allocate an environment block specifically tailored to the given token.
+    fn create(token: &ProcessToken) -> Result<Self> {
+        let mut block = ptr::null_mut();
+        unsafe {
+            CreateEnvironmentBlock(&mut block, token.raw(), false)
+                .context("CreateEnvironmentBlock call failed")?;
+        }
+
+        Ok(Self { block })
+    }
+
+    /// Provide the raw environment block pointer expected by `CreateProcessWithTokenW`.
+    fn as_raw_ptr(&self) -> Option<*const c_void> {
+        if self.block.is_null() {
+            None
+        } else {
+            Some(self.block.cast_const())
+        }
+    }
+}
+
+/// RAII guard managing process and primary thread handles inside [`PROCESS_INFORMATION`].
+#[derive(Default)]
+struct ProcessInformationGuard {
+    information: PROCESS_INFORMATION,
+}
+
+impl Drop for ProcessInformationGuard {
+    fn drop(&mut self) {
+        if !self.information.hProcess.is_invalid() && !self.information.hProcess.0.is_null() {
+            let _ = unsafe { CloseHandle(self.information.hProcess) };
+        }
+        if !self.information.hThread.is_invalid() && !self.information.hThread.0.is_null() {
+            let _ = unsafe { CloseHandle(self.information.hThread) };
+        }
+    }
+}
+
+impl ProcessInformationGuard {
+    /// Retrieve a mutable pointer to the inner [`PROCESS_INFORMATION`] structure.
+    fn as_raw_mut(&mut self) -> *mut PROCESS_INFORMATION {
+        &mut self.information
+    }
 }

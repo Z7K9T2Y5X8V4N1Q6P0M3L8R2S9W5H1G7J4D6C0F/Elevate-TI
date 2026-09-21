@@ -5,9 +5,7 @@ use std::time::Duration;
 use anyhow::Result;
 use windows::core::{PCWSTR, w};
 
-use crate::security::{
-    Privilege, ProcessSpawner, ProcessToken, ServiceManager, TokenType, find_process_id_by_name,
-};
+use crate::security::{self, Privilege, ProcessSpawner, ProcessToken, ServiceManager, TokenType};
 
 /// TrustedInstaller Service Well-Known SID string (`NT SERVICE\TrustedInstaller`).
 const TRUSTEDINSTALLER_SID_STRING: PCWSTR =
@@ -47,7 +45,7 @@ pub fn relaunch_as_trustedinstaller() -> Result<()> {
 
     // 3. Step into SYSTEM context via winlogon, then duplicate TrustedInstaller Primary Token.
     let primary_token = {
-        let winlogon_process_id = find_process_id_by_name("winlogon.exe")?;
+        let winlogon_process_id = security::find_process_id_by_name("winlogon.exe")?;
         let _impersonation_guard = ProcessToken::from_process_id(winlogon_process_id)?
             .duplicate(TokenType::Impersonation)?
             .impersonate()?;

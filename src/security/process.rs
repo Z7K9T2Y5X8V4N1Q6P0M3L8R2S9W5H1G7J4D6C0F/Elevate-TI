@@ -46,7 +46,7 @@ impl<'a> ProcessSpawner<'a> {
         Self {
             token,
             executable_path: None,
-            desktop: HSTRING::from("WinSta0\\Default"),
+            desktop: HSTRING::new(),
         }
     }
 

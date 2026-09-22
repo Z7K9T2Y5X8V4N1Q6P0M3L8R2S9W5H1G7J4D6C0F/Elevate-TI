@@ -11,6 +11,9 @@ use crate::security::{self, Privilege, ProcessSpawner, ProcessToken, ServiceMana
 const TRUSTEDINSTALLER_SID_STRING: PCWSTR =
     w!("S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464");
 
+/// Primary desktop window station path.
+const INTERACTIVE_DESKTOP_PATH: &str = "WinSta0\\Default";
+
 /// The elevation status of the current process instance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ElevationStatus {
@@ -57,7 +60,7 @@ pub fn relaunch_as_trustedinstaller() -> Result<()> {
     // 4. Spawn the elevated instance on the interactive desktop.
     ProcessSpawner::new_with_token(&primary_token)
         .current_exe()?
-        .desktop("WinSta0\\Default")
+        .desktop(INTERACTIVE_DESKTOP_PATH)
         .spawn()?;
 
     Ok(())

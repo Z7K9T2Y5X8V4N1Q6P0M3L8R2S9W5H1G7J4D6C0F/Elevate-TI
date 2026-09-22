@@ -30,7 +30,7 @@ pub struct ServiceManager {
 
 impl Drop for ServiceManager {
     fn drop(&mut self) {
-        if !self.handle.is_invalid() && !self.handle.0.is_null() {
+        if !self.handle.is_invalid() {
             unsafe {
                 let _ = CloseServiceHandle(self.handle);
             }
@@ -69,7 +69,7 @@ pub struct ServiceHandle {
 
 impl Drop for ServiceHandle {
     fn drop(&mut self) {
-        if !self.handle.is_invalid() && !self.handle.0.is_null() {
+        if !self.handle.is_invalid() {
             unsafe {
                 let _ = CloseServiceHandle(self.handle);
             }

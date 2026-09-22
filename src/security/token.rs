@@ -73,7 +73,7 @@ pub struct ProcessToken {
 
 impl Drop for ProcessToken {
     fn drop(&mut self) {
-        if !self.handle.is_invalid() && !self.handle.0.is_null() {
+        if !self.handle.is_invalid() {
             unsafe {
                 let _ = CloseHandle(self.handle);
             }

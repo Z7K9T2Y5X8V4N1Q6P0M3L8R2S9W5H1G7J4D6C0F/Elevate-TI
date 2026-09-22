@@ -22,7 +22,7 @@ pub struct Sid {
 
 impl Drop for Sid {
     fn drop(&mut self) {
-        if !self.raw_sid.is_invalid() && !self.raw_sid.0.is_null() {
+        if !self.raw_sid.is_invalid() {
             unsafe {
                 let _ = LocalFree(HLOCAL(self.raw_sid.0));
             }

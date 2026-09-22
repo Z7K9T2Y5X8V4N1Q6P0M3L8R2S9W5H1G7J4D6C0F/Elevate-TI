@@ -198,10 +198,10 @@ struct ProcessInformationGuard {
 
 impl Drop for ProcessInformationGuard {
     fn drop(&mut self) {
-        if !self.information.hProcess.is_invalid() && !self.information.hProcess.0.is_null() {
+        if !self.information.hProcess.is_invalid() {
             let _ = unsafe { CloseHandle(self.information.hProcess) };
         }
-        if !self.information.hThread.is_invalid() && !self.information.hThread.0.is_null() {
+        if !self.information.hThread.is_invalid() {
             let _ = unsafe { CloseHandle(self.information.hThread) };
         }
     }

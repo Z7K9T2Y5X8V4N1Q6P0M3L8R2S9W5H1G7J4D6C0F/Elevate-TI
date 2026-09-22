@@ -139,13 +139,13 @@ pub fn find_process_id_by_name(target_process_name: &str) -> Result<u32> {
                 return None;
             }
 
-            let candidate_pid = process_id.as_u32();
+            let candidate_process_id = process_id.as_u32();
 
-            let token = ProcessToken::from_process_id(candidate_pid).ok()?;
+            let token = ProcessToken::from_process_id(candidate_process_id).ok()?;
             let user_sid = token.query_user_sid_string().ok()?;
 
             if user_sid == LOCAL_SYSTEM_SID {
-                Some(candidate_pid)
+                Some(candidate_process_id)
             } else {
                 None
             }

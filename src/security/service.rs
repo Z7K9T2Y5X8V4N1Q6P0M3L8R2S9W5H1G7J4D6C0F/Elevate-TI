@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, bail};
 use windows::{
     Win32::{
         Foundation::ERROR_SERVICE_ALREADY_RUNNING,
@@ -88,9 +88,7 @@ impl ServiceHandle {
 
         loop {
             if start_time.elapsed() > timeout {
-                return Err(anyhow!(
-                    "Timed out waiting for service to reach running state"
-                ));
+                bail!("Timed out waiting for service to reach running state");
             }
 
             let status_slice = unsafe {
@@ -115,7 +113,7 @@ impl ServiceHandle {
                     let start_result = unsafe { StartServiceW(self.handle, None) };
                     if let Err(service_error) = start_result {
                         if service_error.code() != ERROR_SERVICE_ALREADY_RUNNING.to_hresult() {
-                            return Err(anyhow!("Failed to start service: {service_error}"));
+                            bail!("Failed to start service: {service_error}");
                         }
                     }
                     sleep(Duration::from_millis(100));

@@ -5,7 +5,7 @@
 
 use std::{mem, ptr};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use windows::{
     Win32::{
         Foundation::{
@@ -196,10 +196,10 @@ impl ProcessToken {
         adjust_token_privilegs_result.context("AdjustTokenPrivileges call failed")?;
 
         if last_os_error != ERROR_SUCCESS {
-            return Err(anyhow!(
+            bail!(
                 "AdjustTokenPrivileges partial failure: 0x{:08X}",
                 last_os_error.0
-            ));
+            );
         }
 
         Ok(())
@@ -210,7 +210,7 @@ impl ProcessToken {
         let mut required_size = 0u32;
         let _ = unsafe { GetTokenInformation(self.handle, TokenUser, None, 0, &mut required_size) };
         if required_size == 0 {
-            return Err(anyhow!("Failed to query token user size"));
+            bail!("Failed to query token user size");
         }
 
         let mut buffer = vec![0u8; required_size as usize];
@@ -257,7 +257,7 @@ impl TokenGroupsBuffer {
         let _ =
             unsafe { GetTokenInformation(token_handle, TokenGroups, None, 0, &mut required_size) };
         if required_size == 0 {
-            return Err(anyhow!("Failed to query token groups memory size"));
+            bail!("Failed to query token groups memory size");
         }
 
         let mut buffer = vec![0u8; required_size as usize];

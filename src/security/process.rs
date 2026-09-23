@@ -11,7 +11,6 @@ use std::{
     ptr::{self},
 };
 
-use anyhow::{Context, Result, anyhow};
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
 use windows::{
     Win32::{
@@ -29,6 +28,7 @@ use windows::{
 };
 
 use super::token::ProcessToken;
+use crate::error::ElevateError;
 
 /// Well-Known Local System Account SID (`NT AUTHORITY\SYSTEM`).
 const LOCAL_SYSTEM_SID: &str = "S-1-5-18";
@@ -51,9 +51,10 @@ impl<'a> ProcessSpawner<'a> {
     }
 
     /// Set the target executable to the path of the current running binary.
-    pub fn current_exe(mut self) -> Result<Self> {
-        self.executable_path =
-            Some(env::current_exe().context("Failed to get current executable path")?);
+    pub fn current_exe(mut self) -> Result<Self, ElevateError> {
+        let binary_path = env::current_exe()
+            .map_err(|source| ElevateError::ExecutablePathUnavailable { source })?;
+        self.executable_path = Some(binary_path);
         Ok(self)
     }
 
@@ -64,10 +65,10 @@ impl<'a> ProcessSpawner<'a> {
     }
 
     /// Spawn the target process under the elevated token.
-    pub fn spawn(self) -> Result<()> {
+    pub fn spawn(self) -> Result<(), ElevateError> {
         let executable_path = self
             .executable_path
-            .ok_or_else(|| anyhow!("Target executable path was not specified"))?;
+            .ok_or(ElevateError::ExecutablePathMissing)?;
 
         // 1. Create an environment block RAII guard for the target token.
         let environment_block_guard = EnvironmentBlockGuard::create(self.token)?;
@@ -77,8 +78,8 @@ impl<'a> ProcessSpawner<'a> {
             .encode_utf16()
             .collect();
 
-        let current_directory =
-            env::current_dir().context("Failed to retrieve current working directory")?;
+        let current_directory = env::current_dir()
+            .map_err(|source| ElevateError::CurrentDirectoryUnavailable { source })?;
         let current_directory_hstring = HSTRING::from(current_directory.as_os_str());
 
         let mut startup_info = STARTUPINFOW {
@@ -105,11 +106,9 @@ impl<'a> ProcessSpawner<'a> {
                 process_information_guard.as_raw_mut(),
             )
         }
-        .map_err(|windows_error| {
-            anyhow!(
-                "CreateProcessWithTokenW failed (Win32 Error: 0x{:08X}): {windows_error}",
-                windows_error.code().0
-            )
+        .map_err(|source| ElevateError::Win32 {
+            operation: "CreateProcessWithTokenW",
+            source,
         })?;
 
         // Both environment_block_guard and process_information_guard will
@@ -122,7 +121,7 @@ impl<'a> ProcessSpawner<'a> {
 ///
 /// Matches the process name and validates that the process belongs to `NT AUTHORITY\SYSTEM` (S-1-5-18),
 /// preventing spoofed user processes from hijacking elevation flow.
-pub fn find_process_id_by_name(target_process_name: &str) -> Result<u32> {
+pub fn find_process_id_by_name(target_process_name: &str) -> Result<u32, ElevateError> {
     let mut system_monitor = System::new();
     system_monitor.refresh_processes_specifics(
         ProcessesToUpdate::All,
@@ -150,7 +149,9 @@ pub fn find_process_id_by_name(target_process_name: &str) -> Result<u32> {
                 None
             }
         })
-        .ok_or_else(|| anyhow!("Genuine SYSTEM process '{target_process_name}' not found"))
+        .ok_or_else(|| ElevateError::SystemProcessNotFound {
+            process_name: target_process_name.to_string(),
+        })
 }
 
 /// RAII guard wrapping an environment block allocated by `CreateEnvironmentBlock`.
@@ -170,12 +171,14 @@ impl Drop for EnvironmentBlockGuard {
 
 impl EnvironmentBlockGuard {
     /// Allocate an environment block specifically tailored to the given token.
-    fn create(token: &ProcessToken) -> Result<Self> {
+    fn create(token: &ProcessToken) -> Result<Self, ElevateError> {
         let mut block = ptr::null_mut();
-        unsafe {
-            CreateEnvironmentBlock(&mut block, token.raw(), false)
-                .context("CreateEnvironmentBlock call failed")?;
-        }
+        unsafe { CreateEnvironmentBlock(&mut block, token.raw(), false) }.map_err(|source| {
+            ElevateError::Win32 {
+                operation: "CreateEnvironmentBlock",
+                source,
+            }
+        })?;
 
         Ok(Self { block })
     }

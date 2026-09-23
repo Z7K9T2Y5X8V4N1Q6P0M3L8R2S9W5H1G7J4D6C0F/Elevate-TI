@@ -5,7 +5,6 @@
 
 use std::{mem, ptr};
 
-use anyhow::{Context, Result, anyhow, bail};
 use windows::{
     Win32::{
         Foundation::{
@@ -29,6 +28,7 @@ use windows::{
 };
 
 use super::sid::Sid;
+use crate::error::ElevateError;
 
 /// Target token type when duplicating an existing security token.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,6 +64,13 @@ impl Privilege {
             Self::Impersonate => w!("SeImpersonatePrivilege"),
         }
     }
+
+    const fn as_static_str(self) -> &'static str {
+        match self {
+            Self::Debug => "SeDebugPrivilege",
+            Self::Impersonate => "SeImpersonatePrivilege",
+        }
+    }
 }
 
 /// Strongly-typed RAII guard holding an open process or thread token.
@@ -83,22 +90,19 @@ impl Drop for ProcessToken {
 
 impl ProcessToken {
     /// Open the token belonging to the current application process.
-    pub fn current_process() -> Result<Self> {
+    pub fn current_process() -> Result<Self, ElevateError> {
         Self::open(
             unsafe { GetCurrentProcess() },
             TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
         )
-        .context("Failed to open current process token")
     }
 
     /// Open the security token belonging to a running process by its identifier.
-    pub fn from_process_id(process_id: u32) -> Result<Self> {
+    pub fn from_process_id(process_id: u32) -> Result<Self, ElevateError> {
         let process_handle = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION, false, process_id) }
-            .map_err(|windows_error| {
-            anyhow!(
-                "OpenProcess failed for PID {process_id} (Win32 Error: 0x{:08X}): {windows_error}",
-                windows_error.code().0
-            )
+            .map_err(|source| ElevateError::Win32 {
+            operation: "OpenProcess",
+            source,
         })?;
 
         let token_result = Self::open(process_handle, TOKEN_ACCESS_MASK(MAXIMUM_ALLOWED));
@@ -106,7 +110,7 @@ impl ProcessToken {
             let _ = CloseHandle(process_handle);
         }
 
-        token_result.with_context(|| format!("OpenProcessToken failed for PID {process_id}"))
+        token_result
     }
 
     /// Retrieve the underlying raw Win32 token handle.
@@ -115,16 +119,23 @@ impl ProcessToken {
     }
 
     /// Open a process token with the requested access mask.
-    fn open(process_handle: HANDLE, desired_access: TOKEN_ACCESS_MASK) -> Result<Self> {
+    fn open(
+        process_handle: HANDLE,
+        desired_access: TOKEN_ACCESS_MASK,
+    ) -> Result<Self, ElevateError> {
         let mut handle = HANDLE::default();
-        unsafe { OpenProcessToken(process_handle, desired_access, &mut handle) }
-            .context("OpenProcessToken Win32 call failed")?;
+        unsafe { OpenProcessToken(process_handle, desired_access, &mut handle) }.map_err(
+            |source| ElevateError::Win32 {
+                operation: "OpenProcessToken",
+                source,
+            },
+        )?;
 
         Ok(Self { handle })
     }
 
     /// Duplicate this token as either a Primary or Impersonation token.
-    pub fn duplicate(&self, token_type: TokenType) -> Result<Self> {
+    pub fn duplicate(&self, token_type: TokenType) -> Result<Self, ElevateError> {
         let access_mask = match token_type {
             TokenType::Primary => TOKEN_ALL_ACCESS,
             TokenType::Impersonation => TOKEN_ACCESS_MASK(MAXIMUM_ALLOWED),
@@ -141,7 +152,10 @@ impl ProcessToken {
                 &mut duplicated_handle,
             )
         }
-        .context("DuplicateTokenEx failed")?;
+        .map_err(|source| ElevateError::Win32 {
+            operation: "DuplicateTokenEx",
+            source,
+        })?;
 
         Ok(Self {
             handle: duplicated_handle,
@@ -149,26 +163,33 @@ impl ProcessToken {
     }
 
     /// Impersonate this token on the current thread, returning an RAII guard.
-    pub fn impersonate(&self) -> Result<ImpersonationGuard> {
-        unsafe { ImpersonateLoggedOnUser(self.handle) }
-            .context("ImpersonateLoggedOnUser failed")?;
+    pub fn impersonate(&self) -> Result<ImpersonationGuard, ElevateError> {
+        unsafe { ImpersonateLoggedOnUser(self.handle) }.map_err(|source| ElevateError::Win32 {
+            operation: "ImpersonateLoggedOnUser",
+            source,
+        })?;
 
         Ok(ImpersonationGuard)
     }
 
     /// Enable specified privileges on this token.
-    pub fn enable_privileges(&self, privileges: &[Privilege]) -> Result<()> {
+    pub fn enable_privileges(&self, privileges: &[Privilege]) -> Result<(), ElevateError> {
         for &privilege in privileges {
-            self.enable_single_privilege(privilege.as_pcwstr())?;
+            self.enable_single_privilege(privilege)?;
         }
         Ok(())
     }
 
     /// Enable a single privilege using its wide-character name.
-    fn enable_single_privilege(&self, privilege_name: PCWSTR) -> Result<()> {
+    fn enable_single_privilege(&self, privilege: Privilege) -> Result<(), ElevateError> {
         let mut privilege_luid = LUID::default();
-        unsafe { LookupPrivilegeValueW(PCWSTR::null(), privilege_name, &mut privilege_luid) }
-            .context("LookupPrivilegeValueW failed")?;
+        unsafe {
+            LookupPrivilegeValueW(PCWSTR::null(), privilege.as_pcwstr(), &mut privilege_luid)
+        }
+        .map_err(|source| ElevateError::Win32 {
+            operation: "LookupPrivilegeValueW",
+            source,
+        })?;
 
         let token_privileges = TOKEN_PRIVILEGES {
             PrivilegeCount: 1,
@@ -181,7 +202,7 @@ impl ProcessToken {
         // Reset the thread last-error before invocation because AdjustTokenPrivileges can
         // return success while still setting ERROR_NOT_ALL_ASSIGNED.
         unsafe { SetLastError(WIN32_ERROR(0)) };
-        let adjust_token_privilegs_result = unsafe {
+        let adjust_result = unsafe {
             AdjustTokenPrivileges(
                 self.handle,
                 false,
@@ -193,24 +214,29 @@ impl ProcessToken {
         };
         let last_os_error = unsafe { GetLastError() };
 
-        adjust_token_privilegs_result.context("AdjustTokenPrivileges call failed")?;
+        adjust_result.map_err(|source| ElevateError::Win32 {
+            operation: "AdjustTokenPrivileges",
+            source,
+        })?;
 
         if last_os_error != ERROR_SUCCESS {
-            bail!(
-                "AdjustTokenPrivileges partial failure: 0x{:08X}",
-                last_os_error.0
-            );
+            return Err(ElevateError::PrivilegeNotAssigned {
+                privilege_name: privilege.as_static_str(),
+                error_code: last_os_error.0,
+            });
         }
 
         Ok(())
     }
 
     /// Retrieve the owner user SID string of this token.
-    pub fn query_user_sid_string(&self) -> Result<String> {
+    pub fn query_user_sid_string(&self) -> Result<String, ElevateError> {
         let mut required_size = 0u32;
         let _ = unsafe { GetTokenInformation(self.handle, TokenUser, None, 0, &mut required_size) };
         if required_size == 0 {
-            bail!("Failed to query token user size");
+            return Err(ElevateError::TokenInformationBufferEmpty {
+                information_class: "TokenUser",
+            });
         }
 
         let mut buffer = vec![0u8; required_size as usize];
@@ -223,14 +249,17 @@ impl ProcessToken {
                 &mut required_size,
             )
         }
-        .context("Failed to retrieve token user information")?;
+        .map_err(|source| ElevateError::Win32 {
+            operation: "GetTokenInformation(TokenUser)",
+            source,
+        })?;
 
         let token_user = unsafe { &*(buffer.as_ptr().cast::<TOKEN_USER>()) };
         Sid::to_string_from_raw(token_user.User.Sid)
     }
 
     /// Check whether this token holds membership in the specified SID string.
-    pub fn contains_sid_string(&self, target_sid_string: PCWSTR) -> Result<bool> {
+    pub fn contains_sid_string(&self, target_sid_string: PCWSTR) -> Result<bool, ElevateError> {
         let target_sid = Sid::parse(target_sid_string)?;
         let groups = self.query_groups()?;
 
@@ -240,7 +269,7 @@ impl ProcessToken {
     }
 
     /// Safely query and retrieve all groups associated with this token.
-    fn query_groups(&self) -> Result<TokenGroupsBuffer> {
+    fn query_groups(&self) -> Result<TokenGroupsBuffer, ElevateError> {
         TokenGroupsBuffer::query_from_token(self.handle)
     }
 }
@@ -252,12 +281,14 @@ struct TokenGroupsBuffer {
 
 impl TokenGroupsBuffer {
     /// Perform the Win32 two-phase query to populate token groups memory.
-    fn query_from_token(token_handle: HANDLE) -> Result<Self> {
+    fn query_from_token(token_handle: HANDLE) -> Result<Self, ElevateError> {
         let mut required_size = 0u32;
         let _ =
             unsafe { GetTokenInformation(token_handle, TokenGroups, None, 0, &mut required_size) };
         if required_size == 0 {
-            bail!("Failed to query token groups memory size");
+            return Err(ElevateError::TokenInformationBufferEmpty {
+                information_class: "TokenGroups",
+            });
         }
 
         let mut buffer = vec![0u8; required_size as usize];
@@ -270,7 +301,10 @@ impl TokenGroupsBuffer {
                 &mut required_size,
             )
         }
-        .context("Failed to retrieve token groups information")?;
+        .map_err(|source| ElevateError::Win32 {
+            operation: "GetTokenInformation(TokenGroups)",
+            source,
+        })?;
 
         Ok(Self { buffer })
     }

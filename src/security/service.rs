@@ -9,7 +9,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result, bail};
 use windows::{
     Win32::{
         Foundation::ERROR_SERVICE_ALREADY_RUNNING,
@@ -22,6 +21,8 @@ use windows::{
     },
     core::PCWSTR,
 };
+
+use crate::error::ElevateError;
 
 /// RAII handle wrapping an active Service Control Manager connection.
 pub struct ServiceManager {
@@ -40,15 +41,18 @@ impl Drop for ServiceManager {
 
 impl ServiceManager {
     /// Open a connection to the local Service Control Manager.
-    pub fn open() -> Result<Self> {
+    pub fn open() -> Result<Self, ElevateError> {
         let handle = unsafe { OpenSCManagerW(PCWSTR::null(), PCWSTR::null(), SC_MANAGER_CONNECT) }
-            .context("Failed to open Service Control Manager")?;
+            .map_err(|source| ElevateError::Win32 {
+                operation: "OpenSCManagerW",
+                source,
+            })?;
 
         Ok(Self { handle })
     }
 
     /// Open a specific service with query and start capabilities.
-    pub fn open_service(&self, service_name: PCWSTR) -> Result<ServiceHandle> {
+    pub fn open_service(&self, service_name: PCWSTR) -> Result<ServiceHandle, ElevateError> {
         let handle = unsafe {
             OpenServiceW(
                 self.handle,
@@ -56,7 +60,10 @@ impl ServiceManager {
                 SERVICE_QUERY_STATUS | SERVICE_QUERY_CONFIG | SERVICE_START,
             )
         }
-        .context("Failed to open service handle")?;
+        .map_err(|source| ElevateError::Win32 {
+            operation: "OpenServiceW",
+            source,
+        })?;
 
         Ok(ServiceHandle { handle })
     }
@@ -81,14 +88,17 @@ impl ServiceHandle {
     /// Ensure the service is started and wait until it enters `SERVICE_RUNNING`.
     ///
     /// Returns the PID of the service process upon entering the running state.
-    pub fn start_and_wait(&self, timeout: Duration) -> Result<u32> {
+    pub fn start_and_wait(&self, timeout: Duration) -> Result<u32, ElevateError> {
         let start_time = Instant::now();
         let mut status = SERVICE_STATUS_PROCESS::default();
         let mut bytes_needed = 0u32;
 
         loop {
             if start_time.elapsed() > timeout {
-                bail!("Timed out waiting for service to reach running state");
+                return Err(ElevateError::ServiceWaitTimeout {
+                    service_name: "TrustedInstaller".to_string(),
+                    elapsed_seconds: timeout.as_secs(),
+                });
             }
 
             let status_slice = unsafe {
@@ -106,14 +116,20 @@ impl ServiceHandle {
                     &mut bytes_needed,
                 )
             }
-            .context("Failed to query service status")?;
+            .map_err(|source| ElevateError::Win32 {
+                operation: "QueryServiceStatusEx",
+                source,
+            })?;
 
             match status.dwCurrentState {
                 SERVICE_STOPPED => {
                     let start_result = unsafe { StartServiceW(self.handle, None) };
                     if let Err(service_error) = start_result {
                         if service_error.code() != ERROR_SERVICE_ALREADY_RUNNING.to_hresult() {
-                            bail!("Failed to start service: {service_error}");
+                            return Err(ElevateError::Win32 {
+                                operation: "StartServiceW",
+                                source: service_error,
+                            });
                         }
                     }
                     sleep(Duration::from_millis(100));

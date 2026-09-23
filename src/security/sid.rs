@@ -3,7 +3,6 @@
 //! Encapsulates raw Win32 `PSID` allocation and provides safe RAII
 //! deallocation via [`windows::Win32::Foundation::LocalFree`].
 
-use anyhow::{Context, Result};
 use windows::{
     Win32::{
         Foundation::{HLOCAL, LocalFree},
@@ -14,6 +13,8 @@ use windows::{
     },
     core::{PCWSTR, PWSTR},
 };
+
+use crate::error::ElevateError;
 
 /// Strongly-typed RAII wrapper for a Windows Security Identifier (SID).
 pub struct Sid {
@@ -30,12 +31,31 @@ impl Drop for Sid {
     }
 }
 
+/// RAII guard releasing a [`PWSTR`] buffer allocated by Win32 functions via [`LocalFree`].
+struct LocalAllocatedStringGuard {
+    pointer: PWSTR,
+}
+
+impl Drop for LocalAllocatedStringGuard {
+    fn drop(&mut self) {
+        if !self.pointer.is_null() {
+            unsafe {
+                let _ = LocalFree(HLOCAL(self.pointer.0.cast()));
+            }
+        }
+    }
+}
+
 impl Sid {
     /// Parse a security identifier from a wide string constant.
-    pub fn parse(sid_string: PCWSTR) -> Result<Self> {
+    pub fn parse(sid_string: PCWSTR) -> Result<Self, ElevateError> {
         let mut raw_sid = PSID::default();
-        unsafe { ConvertStringSidToSidW(sid_string, &mut raw_sid) }
-            .context("ConvertStringSidToSidW failed to parse SID")?;
+        unsafe { ConvertStringSidToSidW(sid_string, &mut raw_sid) }.map_err(|source| {
+            ElevateError::Win32 {
+                operation: "ConvertStringSidToSidW",
+                source,
+            }
+        })?;
 
         Ok(Self { raw_sid })
     }
@@ -46,17 +66,20 @@ impl Sid {
     }
 
     /// Convert a raw `PSID` into its standard string representation.
-    pub fn to_string_from_raw(raw_sid: PSID) -> Result<String> {
+    pub fn to_string_from_raw(raw_sid: PSID) -> Result<String, ElevateError> {
         let mut sid_pwstr = PWSTR::null();
-        unsafe { ConvertSidToStringSidW(raw_sid, &mut sid_pwstr) }
-            .context("ConvertSidToStringSidW failed")?;
+        unsafe { ConvertSidToStringSidW(raw_sid, &mut sid_pwstr) }.map_err(|source| {
+            ElevateError::Win32 {
+                operation: "ConvertSidToStringSidW",
+                source,
+            }
+        })?;
 
-        let sid_string = unsafe { sid_pwstr.to_string() }
-            .context("Failed to parse SID string buffer as UTF-8")?;
+        // Immediately transfer ownership of the allocated buffer to the RAII guard.
+        let string_sid_guard = LocalAllocatedStringGuard { pointer: sid_pwstr };
 
-        unsafe {
-            let _ = LocalFree(HLOCAL(sid_pwstr.0.cast()));
-        }
+        let sid_string = unsafe { string_sid_guard.pointer.to_string() }
+            .map_err(|_| ElevateError::SidStringConversionFailed)?;
 
         Ok(sid_string)
     }

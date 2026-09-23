@@ -2,10 +2,12 @@
 
 use std::time::Duration;
 
-use anyhow::Result;
 use windows::core::{PCWSTR, w};
 
-use crate::security::{self, Privilege, ProcessSpawner, ProcessToken, ServiceManager, TokenType};
+use crate::{
+    error::ElevateError,
+    security::{self, Privilege, ProcessSpawner, ProcessToken, ServiceManager, TokenType},
+};
 
 /// TrustedInstaller Service Well-Known SID string (`NT SERVICE\TrustedInstaller`).
 const TRUSTEDINSTALLER_SID_STRING: PCWSTR =
@@ -24,7 +26,7 @@ pub enum ElevationStatus {
 }
 
 /// Check whether the current process holds the TrustedInstaller SID in its token groups.
-pub fn check_elevation_status() -> Result<ElevationStatus> {
+pub fn check_elevation_status() -> Result<ElevationStatus, ElevateError> {
     let current_token = ProcessToken::current_process()?;
 
     let is_elevated = current_token.contains_sid_string(TRUSTEDINSTALLER_SID_STRING)?;
@@ -36,7 +38,7 @@ pub fn check_elevation_status() -> Result<ElevationStatus> {
 }
 
 /// Restart the current application under the TrustedInstaller identity in the active user session.
-pub fn relaunch_as_trustedinstaller() -> Result<()> {
+pub fn relaunch_as_trustedinstaller() -> Result<(), ElevateError> {
     // 1. Enable administrative debugging and impersonation privileges.
     ProcessToken::current_process()?
         .enable_privileges(&[Privilege::Debug, Privilege::Impersonate])?;

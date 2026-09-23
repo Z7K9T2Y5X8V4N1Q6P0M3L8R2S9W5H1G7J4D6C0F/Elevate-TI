@@ -1,0 +1,29 @@
+//! Declarative helper macros for streamlined Win32 interaction.
+//!
+//! Provides lightweight macros that wrap raw Win32 calls and automatically
+//! convert failures into [`crate::error::ElevateError::Win32`] with correct
+//! operation labels, eliminating boilerplate `.map_err` expressions.
+
+/// Invokes a Win32 expression returning a [`windows::core::Result`] and transforms
+/// any encountered error into an [`crate::error::ElevateError::Win32`] with the stringified expression.
+macro_rules! win32_call {
+    ($expression:expr) => {
+        unsafe { $expression }.map_err(|source| $crate::error::ElevateError::Win32 {
+            operation: stringify!($expression),
+            source,
+        })
+    };
+}
+
+/// Unwraps an [`Option<T>`], returning `T` or early-returning with the specified error expression.
+macro_rules! require_some {
+    ($optional_value:expr, $error_expression:expr) => {
+        match $optional_value {
+            Some(inner_value) => inner_value,
+            None => return Err($error_expression),
+        }
+    };
+}
+
+pub(crate) use require_some;
+pub(crate) use win32_call;

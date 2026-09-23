@@ -3,7 +3,7 @@
 //! Provides the [`ElevateError`] enum that encapsulates all failure modes
 //! encountered across process, token, service, and elevation subsystems.
 
-use std::{error::Error, fmt};
+use std::{error::Error, fmt, io};
 
 /// The outcome error type for TrustedInstaller elevation operations.
 ///
@@ -37,15 +37,10 @@ pub enum ElevateError {
         /// The duration waited before timing out.
         elapsed_seconds: u64,
     },
-    /// The target binary executable path could not be resolved.
-    ExecutablePathUnavailable {
+    /// An environment I/O path or directory could not be resolved.
+    IoUnavailable {
         /// The underlying I/O error.
-        source: std::io::Error,
-    },
-    /// The current working directory could not be resolved.
-    CurrentDirectoryUnavailable {
-        /// The underlying I/O error.
-        source: std::io::Error,
+        source: io::Error,
     },
     /// Target executable path was not specified prior to spawning.
     ExecutablePathMissing,
@@ -92,17 +87,8 @@ impl fmt::Display for ElevateError {
                     "Timed out waiting for service '{service_name}' after {elapsed_seconds} seconds"
                 )
             }
-            Self::ExecutablePathUnavailable { source } => {
-                write!(
-                    formatter,
-                    "Failed to resolve current binary executable path: {source}"
-                )
-            }
-            Self::CurrentDirectoryUnavailable { source } => {
-                write!(
-                    formatter,
-                    "Failed to resolve current working directory: {source}"
-                )
+            Self::IoUnavailable { source } => {
+                write!(formatter, "System I/O query failed: {source}")
             }
             Self::ExecutablePathMissing => {
                 write!(
@@ -127,9 +113,14 @@ impl Error for ElevateError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Win32 { source, .. } => Some(source),
-            Self::ExecutablePathUnavailable { source }
-            | Self::CurrentDirectoryUnavailable { source } => Some(source),
+            Self::IoUnavailable { source } => Some(source),
             _ => None,
         }
+    }
+}
+
+impl From<io::Error> for ElevateError {
+    fn from(source: io::Error) -> Self {
+        Self::IoUnavailable { source }
     }
 }

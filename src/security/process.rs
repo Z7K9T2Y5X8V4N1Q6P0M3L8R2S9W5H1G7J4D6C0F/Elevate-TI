@@ -11,7 +11,7 @@ use std::{
     ptr::{self},
 };
 
-use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+use sysinfo::{Process, ProcessRefreshKind, ProcessesToUpdate, System};
 use windows::{
     Win32::{
         Foundation::CloseHandle,
@@ -27,7 +27,10 @@ use windows::{
     core::{HSTRING, PCWSTR, PWSTR},
 };
 
-use super::token::ProcessToken;
+use super::{
+    macros::{require_some, win32_call},
+    token::ProcessToken,
+};
 use crate::error::ElevateError;
 
 /// Well-Known Local System Account SID (`NT AUTHORITY\SYSTEM`).
@@ -52,8 +55,7 @@ impl<'a> ProcessSpawner<'a> {
 
     /// Set the target executable to the path of the current running binary.
     pub fn current_exe(mut self) -> Result<Self, ElevateError> {
-        let binary_path = env::current_exe()
-            .map_err(|source| ElevateError::ExecutablePathUnavailable { source })?;
+        let binary_path = env::current_exe()?;
         self.executable_path = Some(binary_path);
         Ok(self)
     }
@@ -66,20 +68,16 @@ impl<'a> ProcessSpawner<'a> {
 
     /// Spawn the target process under the elevated token.
     pub fn spawn(self) -> Result<(), ElevateError> {
-        let executable_path = self
-            .executable_path
-            .ok_or(ElevateError::ExecutablePathMissing)?;
+        let executable_path =
+            require_some!(self.executable_path, ElevateError::ExecutablePathMissing);
 
-        // 1. Create an environment block RAII guard for the target token.
         let environment_block_guard = EnvironmentBlockGuard::create(self.token)?;
 
-        // 2. Format the command line with standard quoting and null-terminator.
         let mut command_line_buffer: Vec<u16> = format!("\"{}\"\0", executable_path.display())
             .encode_utf16()
             .collect();
 
-        let current_directory = env::current_dir()
-            .map_err(|source| ElevateError::CurrentDirectoryUnavailable { source })?;
+        let current_directory = env::current_dir()?;
         let current_directory_hstring = HSTRING::from(current_directory.as_os_str());
 
         let mut startup_info = STARTUPINFOW {
@@ -90,29 +88,20 @@ impl<'a> ProcessSpawner<'a> {
             ..Default::default()
         };
 
-        // 3. Prepare the process information RAII guard to hold output handles.
         let mut process_information_guard = ProcessInformationGuard::default();
 
-        unsafe {
-            CreateProcessWithTokenW(
-                self.token.raw(),
-                LOGON_WITH_PROFILE,
-                PCWSTR::null(),
-                PWSTR(command_line_buffer.as_mut_ptr()),
-                CREATE_UNICODE_ENVIRONMENT,
-                environment_block_guard.as_raw_ptr(),
-                &current_directory_hstring,
-                &mut startup_info,
-                process_information_guard.as_raw_mut(),
-            )
-        }
-        .map_err(|source| ElevateError::Win32 {
-            operation: "CreateProcessWithTokenW",
-            source,
-        })?;
+        win32_call!(CreateProcessWithTokenW(
+            self.token.raw(),
+            LOGON_WITH_PROFILE,
+            PCWSTR::null(),
+            PWSTR(command_line_buffer.as_mut_ptr()),
+            CREATE_UNICODE_ENVIRONMENT,
+            environment_block_guard.as_raw_ptr(),
+            &current_directory_hstring,
+            &mut startup_info,
+            process_information_guard.as_raw_mut(),
+        ))?;
 
-        // Both environment_block_guard and process_information_guard will
-        // automatically drop and release their underlying Win32 resources cleanly here.
         Ok(())
     }
 }
@@ -129,29 +118,36 @@ pub fn find_process_id_by_name(target_process_name: &str) -> Result<u32, Elevate
         ProcessRefreshKind::nothing(),
     );
 
-    system_monitor
-        .processes()
-        .iter()
-        .find_map(|(process_id, process)| {
-            let process_name = process.name().to_string_lossy();
-            if !process_name.eq_ignore_ascii_case(target_process_name) {
-                return None;
-            }
+    for (process_id, process) in system_monitor.processes() {
+        if is_matching_system_process(process, target_process_name) {
+            return Ok(process_id.as_u32());
+        }
+    }
 
-            let candidate_process_id = process_id.as_u32();
+    Err(ElevateError::SystemProcessNotFound {
+        process_name: target_process_name.to_string(),
+    })
+}
 
-            let token = ProcessToken::from_process_id(candidate_process_id).ok()?;
-            let user_sid = token.query_user_sid_string().ok()?;
+/// Check if a process instance matches the requested name and is owned by `NT AUTHORITY\SYSTEM`.
+fn is_matching_system_process(process: &Process, target_process_name: &str) -> bool {
+    let process_name = process.name().to_string_lossy();
+    if !process_name.eq_ignore_ascii_case(target_process_name) {
+        return false;
+    }
 
-            if user_sid == LOCAL_SYSTEM_SID {
-                Some(candidate_process_id)
-            } else {
-                None
-            }
-        })
-        .ok_or_else(|| ElevateError::SystemProcessNotFound {
-            process_name: target_process_name.to_string(),
-        })
+    let candidate_process_id = process.pid().as_u32();
+    let token = match ProcessToken::from_process_id(candidate_process_id) {
+        Ok(valid_token) => valid_token,
+        Err(_) => return false,
+    };
+
+    let user_sid = match token.query_user_sid_string() {
+        Ok(valid_sid) => valid_sid,
+        Err(_) => return false,
+    };
+
+    user_sid == LOCAL_SYSTEM_SID
 }
 
 /// RAII guard wrapping an environment block allocated by `CreateEnvironmentBlock`.
@@ -173,13 +169,7 @@ impl EnvironmentBlockGuard {
     /// Allocate an environment block specifically tailored to the given token.
     fn create(token: &ProcessToken) -> Result<Self, ElevateError> {
         let mut block = ptr::null_mut();
-        unsafe { CreateEnvironmentBlock(&mut block, token.raw(), false) }.map_err(|source| {
-            ElevateError::Win32 {
-                operation: "CreateEnvironmentBlock",
-                source,
-            }
-        })?;
-
+        win32_call!(CreateEnvironmentBlock(&mut block, token.raw(), false))?;
         Ok(Self { block })
     }
 
@@ -202,10 +192,14 @@ struct ProcessInformationGuard {
 impl Drop for ProcessInformationGuard {
     fn drop(&mut self) {
         if !self.information.hProcess.is_invalid() {
-            let _ = unsafe { CloseHandle(self.information.hProcess) };
+            unsafe {
+                let _ = CloseHandle(self.information.hProcess);
+            }
         }
         if !self.information.hThread.is_invalid() {
-            let _ = unsafe { CloseHandle(self.information.hThread) };
+            unsafe {
+                let _ = CloseHandle(self.information.hThread);
+            }
         }
     }
 }

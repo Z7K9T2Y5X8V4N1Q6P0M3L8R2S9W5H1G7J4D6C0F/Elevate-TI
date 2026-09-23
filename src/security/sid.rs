@@ -14,6 +14,7 @@ use windows::{
     core::{PCWSTR, PWSTR},
 };
 
+use super::macros::win32_call;
 use crate::error::ElevateError;
 
 /// Strongly-typed RAII wrapper for a Windows Security Identifier (SID).
@@ -46,17 +47,18 @@ impl Drop for LocalAllocatedStringGuard {
     }
 }
 
+impl LocalAllocatedStringGuard {
+    /// Convert the inner null-terminated wide string into a standard Rust [`String`].
+    fn into_string(self) -> Result<String, ElevateError> {
+        unsafe { self.pointer.to_string() }.map_err(|_| ElevateError::SidStringConversionFailed)
+    }
+}
+
 impl Sid {
     /// Parse a security identifier from a wide string constant.
     pub fn parse(sid_string: PCWSTR) -> Result<Self, ElevateError> {
         let mut raw_sid = PSID::default();
-        unsafe { ConvertStringSidToSidW(sid_string, &mut raw_sid) }.map_err(|source| {
-            ElevateError::Win32 {
-                operation: "ConvertStringSidToSidW",
-                source,
-            }
-        })?;
-
+        win32_call!(ConvertStringSidToSidW(sid_string, &mut raw_sid))?;
         Ok(Self { raw_sid })
     }
 
@@ -68,19 +70,8 @@ impl Sid {
     /// Convert a raw `PSID` into its standard string representation.
     pub fn to_string_from_raw(raw_sid: PSID) -> Result<String, ElevateError> {
         let mut sid_pwstr = PWSTR::null();
-        unsafe { ConvertSidToStringSidW(raw_sid, &mut sid_pwstr) }.map_err(|source| {
-            ElevateError::Win32 {
-                operation: "ConvertSidToStringSidW",
-                source,
-            }
-        })?;
+        win32_call!(ConvertSidToStringSidW(raw_sid, &mut sid_pwstr))?;
 
-        // Immediately transfer ownership of the allocated buffer to the RAII guard.
-        let string_sid_guard = LocalAllocatedStringGuard { pointer: sid_pwstr };
-
-        let sid_string = unsafe { string_sid_guard.pointer.to_string() }
-            .map_err(|_| ElevateError::SidStringConversionFailed)?;
-
-        Ok(sid_string)
+        LocalAllocatedStringGuard { pointer: sid_pwstr }.into_string()
     }
 }

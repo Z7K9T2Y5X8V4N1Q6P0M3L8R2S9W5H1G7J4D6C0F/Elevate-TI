@@ -34,14 +34,14 @@ impl Drop for Sid {
 
 /// RAII guard releasing a [`PWSTR`] buffer allocated by Win32 functions via [`LocalFree`].
 struct LocalAllocatedStringGuard {
-    pointer: PWSTR,
+    ptr: PWSTR,
 }
 
 impl Drop for LocalAllocatedStringGuard {
     fn drop(&mut self) {
-        if !self.pointer.is_null() {
+        if !self.ptr.is_null() {
             unsafe {
-                let _ = LocalFree(HLOCAL(self.pointer.0.cast()));
+                let _ = LocalFree(HLOCAL(self.ptr.0.cast()));
             }
         }
     }
@@ -50,7 +50,7 @@ impl Drop for LocalAllocatedStringGuard {
 impl LocalAllocatedStringGuard {
     /// Convert the inner null-terminated wide string into a standard Rust [`String`].
     fn into_string(self) -> Result<String, ElevateError> {
-        unsafe { self.pointer.to_string() }.map_err(|_| ElevateError::SidStringConversionFailed)
+        unsafe { self.ptr.to_string() }.map_err(|_| ElevateError::SidStringConversionFailed)
     }
 }
 
@@ -72,6 +72,6 @@ impl Sid {
         let mut sid_pwstr = PWSTR::null();
         win32_call!(ConvertSidToStringSidW(raw_sid, &mut sid_pwstr))?;
 
-        LocalAllocatedStringGuard { pointer: sid_pwstr }.into_string()
+        LocalAllocatedStringGuard { ptr: sid_pwstr }.into_string()
     }
 }

@@ -7,9 +7,9 @@
 /// Invokes a Win32 expression returning a [`windows::core::Result`] and transforms
 /// any encountered error into an [`crate::error::ElevateError::Win32`] with the stringified expression.
 macro_rules! win32_call {
-    ($expression:expr) => {
-        unsafe { $expression }.map_err(|source| $crate::error::ElevateError::Win32 {
-            operation: stringify!($expression),
+    ($function_name:ident ( $($arguments:tt)* )) => {
+        unsafe { $function_name($($arguments)*) }.map_err(|source| $crate::error::ElevateError::Win32 {
+            operation: stringify!($function_name),
             source,
         })
     };

@@ -117,6 +117,11 @@ impl Drop for ProcessToken {
 }
 
 impl ProcessToken {
+    /// Encapsulate an existing raw Win32 token handle inside an RAII closer.
+    pub const fn from_raw_handle(handle: HANDLE) -> Self {
+        Self { handle }
+    }
+
     /// Open the token belonging to the current application process.
     pub fn current_process() -> Result<Self, ElevateError> {
         Self::open(
@@ -240,8 +245,6 @@ impl ProcessToken {
             }],
         };
 
-        // Reset the thread last-error before invocation because AdjustTokenPrivileges can
-        // return success while still setting ERROR_NOT_ALL_ASSIGNED.
         unsafe { SetLastError(WIN32_ERROR(0)) };
         win32_call!(AdjustTokenPrivileges(
             self.handle,
@@ -318,12 +321,10 @@ impl AlignedTokenBuffer {
         }
     }
 
-    /// Expose the underlying pointer as a typed immutable pointer.
     const fn as_ptr(&self) -> *const u8 {
         self.pointer
     }
 
-    /// Expose the underlying pointer as a typed mutable pointer.
     fn as_mut_ptr(&mut self) -> *mut u8 {
         self.pointer
     }
@@ -387,9 +388,6 @@ fn are_sids_equal(first_sid: PSID, second_sid: PSID) -> bool {
 }
 
 /// RAII guard representing active thread impersonation.
-///
-/// Automatically calls [`RevertToSelf`] upon being dropped to guarantee
-/// no privileged security context leaks across operations.
 pub struct ImpersonationGuard;
 
 impl Drop for ImpersonationGuard {

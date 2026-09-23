@@ -17,6 +17,7 @@ use windows::{
         Foundation::CloseHandle,
         System::{
             Environment::{CreateEnvironmentBlock, DestroyEnvironmentBlock},
+            RemoteDesktop::WTSGetActiveConsoleSessionId,
             Threading::{
                 CREATE_PROCESS_LOGON_FLAGS, CREATE_UNICODE_ENVIRONMENT, CreateProcessWithTokenW,
                 PROCESS_INFORMATION, STARTF_USESHOWWINDOW, STARTUPINFOW,
@@ -109,16 +110,8 @@ impl<'a> ProcessSpawner<'a> {
 }
 
 /// Retrieve the active console session ID for the current interactive desktop.
-///
-/// Links directly to Kernel32 export to avoid pulling in additional optional crate features.
 pub fn get_active_session_id() -> u32 {
-    unsafe {
-        #[link(name = "kernel32")]
-        unsafe extern "system" {
-            fn WTSGetActiveConsoleSessionId() -> u32;
-        }
-        WTSGetActiveConsoleSessionId()
-    }
+    unsafe { WTSGetActiveConsoleSessionId() }
 }
 
 /// Find a genuine SYSTEM process ID by its executable name within the active console session.

@@ -3,7 +3,7 @@
 //! Provides RAII types for manipulating Windows security tokens, checking
 //! group memberships, enabling privileges, and impersonating security contexts.
 
-use std::{mem, ptr};
+use std::{alloc::Layout, mem, ptr};
 
 use windows::{
     Win32::{
@@ -13,10 +13,10 @@ use windows::{
         Security::{
             AdjustTokenPrivileges, DuplicateTokenEx, EqualSid, GetTokenInformation,
             ImpersonateLoggedOnUser, LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, PSID,
-            RevertToSelf, SE_PRIVILEGE_ENABLED, SecurityImpersonation, TOKEN_ACCESS_MASK,
-            TOKEN_ADJUST_PRIVILEGES, TOKEN_ALL_ACCESS, TOKEN_GROUPS, TOKEN_INFORMATION_CLASS,
-            TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_TYPE, TOKEN_USER, TokenGroups, TokenImpersonation,
-            TokenPrimary, TokenUser,
+            RevertToSelf, SE_PRIVILEGE_ENABLED, SecurityImpersonation, SetTokenInformation,
+            TOKEN_ACCESS_MASK, TOKEN_ADJUST_PRIVILEGES, TOKEN_ALL_ACCESS, TOKEN_GROUPS,
+            TOKEN_INFORMATION_CLASS, TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_TYPE, TOKEN_USER,
+            TokenGroups, TokenImpersonation, TokenPrimary, TokenSessionId, TokenUser,
         },
         System::{
             SystemServices::MAXIMUM_ALLOWED,
@@ -74,6 +74,33 @@ impl Privilege {
     }
 }
 
+/// Generic RAII auto-closing handle guard for standard Win32 OS handles.
+pub(crate) struct HandleGuard {
+    handle: HANDLE,
+}
+
+impl Drop for HandleGuard {
+    fn drop(&mut self) {
+        if !self.handle.is_invalid() {
+            unsafe {
+                let _ = CloseHandle(self.handle);
+            }
+        }
+    }
+}
+
+impl HandleGuard {
+    /// Encapsulate a raw OS handle inside an RAII closer.
+    pub const fn new(handle: HANDLE) -> Self {
+        Self { handle }
+    }
+
+    /// Access the underlying raw handle without relinquishing ownership.
+    pub const fn raw(&self) -> HANDLE {
+        self.handle
+    }
+}
+
 /// Strongly-typed RAII guard holding an open process or thread token.
 pub struct ProcessToken {
     handle: HANDLE,
@@ -100,15 +127,14 @@ impl ProcessToken {
 
     /// Open the security token belonging to a running process by its identifier.
     pub fn from_process_id(process_id: u32) -> Result<Self, ElevateError> {
-        let process_handle =
+        let raw_process_handle =
             win32_call!(OpenProcess(PROCESS_QUERY_INFORMATION, false, process_id))?;
+        let process_handle_guard = HandleGuard::new(raw_process_handle);
 
-        let token_result = Self::open(process_handle, TOKEN_ACCESS_MASK(MAXIMUM_ALLOWED));
-        unsafe {
-            let _ = CloseHandle(process_handle);
-        }
-
-        token_result
+        Self::open(
+            process_handle_guard.raw(),
+            TOKEN_ACCESS_MASK(MAXIMUM_ALLOWED),
+        )
     }
 
     /// Retrieve the underlying raw Win32 token handle.
@@ -121,14 +147,16 @@ impl ProcessToken {
         process_handle: HANDLE,
         desired_access: TOKEN_ACCESS_MASK,
     ) -> Result<Self, ElevateError> {
-        let mut handle = HANDLE::default();
+        let mut token_handle = HANDLE::default();
         win32_call!(OpenProcessToken(
             process_handle,
             desired_access,
-            &mut handle
+            &mut token_handle
         ))?;
 
-        Ok(Self { handle })
+        Ok(Self {
+            handle: token_handle,
+        })
     }
 
     /// Duplicate this token as either a Primary or Impersonation token.
@@ -151,6 +179,34 @@ impl ProcessToken {
         Ok(Self {
             handle: duplicated_handle,
         })
+    }
+
+    /// Assign a specific Windows Session ID to this token.
+    pub fn assign_session_id(&self, session_id: u32) -> Result<(), ElevateError> {
+        win32_call!(SetTokenInformation(
+            self.handle,
+            TokenSessionId,
+            ptr::from_ref(&session_id).cast(),
+            mem::size_of::<u32>() as _,
+        ))?;
+
+        Ok(())
+    }
+
+    /// Query the Windows Session ID currently associated with this token.
+    pub fn query_session_id(&self) -> Result<u32, ElevateError> {
+        let mut session_id = 0u32;
+        let mut return_length = 0u32;
+
+        win32_call!(GetTokenInformation(
+            self.handle,
+            TokenSessionId,
+            Some(ptr::from_mut(&mut session_id).cast()),
+            mem::size_of::<u32>() as u32,
+            &mut return_length,
+        ))?;
+
+        Ok(session_id)
     }
 
     /// Impersonate this token on the current thread, returning an RAII guard.
@@ -209,8 +265,8 @@ impl ProcessToken {
 
     /// Retrieve the owner user SID string of this token.
     pub fn query_user_sid_string(&self) -> Result<String, ElevateError> {
-        let buffer = query_token_information_buffer(self.handle, TokenUser, "TokenUser")?;
-        let token_user = unsafe { &*(buffer.as_ptr().cast::<TOKEN_USER>()) };
+        let aligned_buffer = query_token_information_buffer(self.handle, TokenUser, "TokenUser")?;
+        let token_user = unsafe { &*aligned_buffer.as_ptr().cast::<TOKEN_USER>() };
         Sid::to_string_from_raw(token_user.User.Sid)
     }
 
@@ -226,17 +282,59 @@ impl ProcessToken {
 
     /// Safely query and retrieve all groups associated with this token.
     fn query_groups(&self) -> Result<TokenGroupsBuffer, ElevateError> {
-        let buffer = query_token_information_buffer(self.handle, TokenGroups, "TokenGroups")?;
-        Ok(TokenGroupsBuffer { buffer })
+        let aligned_buffer =
+            query_token_information_buffer(self.handle, TokenGroups, "TokenGroups")?;
+        Ok(TokenGroupsBuffer {
+            _buffer: aligned_buffer,
+        })
     }
 }
 
-/// Generic two-phase memory query helper for token information classes.
+/// Dynamically allocated buffer guaranteed to satisfy 8-byte pointer alignment.
+struct AlignedTokenBuffer {
+    pointer: *mut u8,
+    layout: Layout,
+}
+
+impl Drop for AlignedTokenBuffer {
+    fn drop(&mut self) {
+        if !self.pointer.is_null() && self.layout.size() > 0 {
+            unsafe {
+                std::alloc::dealloc(self.pointer, self.layout);
+            }
+        }
+    }
+}
+
+impl AlignedTokenBuffer {
+    /// Allocate an aligned zero-initialized buffer with pointer alignment constraints.
+    fn allocate(size_in_bytes: usize) -> Option<Self> {
+        let layout = Layout::from_size_align(size_in_bytes, mem::align_of::<usize>()).ok()?;
+        let pointer = unsafe { std::alloc::alloc_zeroed(layout) };
+        if pointer.is_null() {
+            None
+        } else {
+            Some(Self { pointer, layout })
+        }
+    }
+
+    /// Expose the underlying pointer as a typed immutable pointer.
+    const fn as_ptr(&self) -> *const u8 {
+        self.pointer
+    }
+
+    /// Expose the underlying pointer as a typed mutable pointer.
+    fn as_mut_ptr(&mut self) -> *mut u8 {
+        self.pointer
+    }
+}
+
+/// Generic two-phase memory query helper returning an aligned dynamic buffer.
 fn query_token_information_buffer(
     token_handle: HANDLE,
     information_class: TOKEN_INFORMATION_CLASS,
     class_name: &'static str,
-) -> Result<Vec<u8>, ElevateError> {
+) -> Result<AlignedTokenBuffer, ElevateError> {
     let mut required_size = 0u32;
     let _ = unsafe {
         GetTokenInformation(token_handle, information_class, None, 0, &mut required_size)
@@ -247,27 +345,32 @@ fn query_token_information_buffer(
         });
     }
 
-    let mut buffer = vec![0u8; required_size as usize];
+    let mut aligned_buffer = AlignedTokenBuffer::allocate(required_size as usize).ok_or(
+        ElevateError::TokenInformationBufferEmpty {
+            information_class: class_name,
+        },
+    )?;
+
     win32_call!(GetTokenInformation(
         token_handle,
         information_class,
-        Some(buffer.as_mut_ptr().cast()),
+        Some(aligned_buffer.as_mut_ptr().cast()),
         required_size,
         &mut required_size,
     ))?;
 
-    Ok(buffer)
+    Ok(aligned_buffer)
 }
 
-/// RAII wrapper managing the raw dynamic buffer holding a [`TOKEN_GROUPS`] structure.
+/// RAII wrapper managing an aligned dynamic buffer holding a [`TOKEN_GROUPS`] structure.
 struct TokenGroupsBuffer {
-    buffer: Vec<u8>,
+    _buffer: AlignedTokenBuffer,
 }
 
 impl TokenGroupsBuffer {
     /// Expose safe borrowed references to each group `PSID`.
     fn iter(&self) -> impl Iterator<Item = PSID> + '_ {
-        let token_groups = unsafe { &*(self.buffer.as_ptr().cast::<TOKEN_GROUPS>()) };
+        let token_groups = unsafe { &*self._buffer.as_ptr().cast::<TOKEN_GROUPS>() };
         let slice = unsafe {
             std::slice::from_raw_parts(
                 token_groups.Groups.as_ptr(),

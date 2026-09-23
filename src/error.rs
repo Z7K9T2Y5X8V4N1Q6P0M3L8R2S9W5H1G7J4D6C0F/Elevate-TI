@@ -33,7 +33,7 @@ pub enum ElevateError {
     },
 
     /// A required genuine Windows SYSTEM process could not be located.
-    #[error("Genuine SYSTEM process '{process_name}' could not be found")]
+    #[error("Genuine SYSTEM process '{process_name}' could not be found in active session")]
     SystemProcessNotFound {
         /// The name of the process being searched.
         process_name: String,

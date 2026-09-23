@@ -18,7 +18,7 @@ use windows::{
         System::{
             Environment::{CreateEnvironmentBlock, DestroyEnvironmentBlock},
             Threading::{
-                CREATE_UNICODE_ENVIRONMENT, CreateProcessWithTokenW, LOGON_WITH_PROFILE,
+                CREATE_PROCESS_LOGON_FLAGS, CREATE_UNICODE_ENVIRONMENT, CreateProcessWithTokenW,
                 PROCESS_INFORMATION, STARTF_USESHOWWINDOW, STARTUPINFOW,
             },
         },
@@ -90,9 +90,11 @@ impl<'a> ProcessSpawner<'a> {
 
         let mut process_information_guard = ProcessInformationGuard::default();
 
+        // Use flag value 0 (no profile load) because service accounts
+        // like TrustedInstaller do not own standard user profile registry hives.
         win32_call!(CreateProcessWithTokenW(
             self.token.raw(),
-            LOGON_WITH_PROFILE,
+            CREATE_PROCESS_LOGON_FLAGS(0),
             PCWSTR::null(),
             PWSTR(command_line_buffer.as_mut_ptr()),
             CREATE_UNICODE_ENVIRONMENT,
@@ -106,11 +108,26 @@ impl<'a> ProcessSpawner<'a> {
     }
 }
 
-/// Find a genuine SYSTEM process ID by its executable name.
+/// Retrieve the active console session ID for the current interactive desktop.
 ///
-/// Matches the process name and validates that the process belongs to `NT AUTHORITY\SYSTEM` (S-1-5-18),
-/// preventing spoofed user processes from hijacking elevation flow.
+/// Links directly to Kernel32 export to avoid pulling in additional optional crate features.
+pub fn get_active_session_id() -> u32 {
+    unsafe {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn WTSGetActiveConsoleSessionId() -> u32;
+        }
+        WTSGetActiveConsoleSessionId()
+    }
+}
+
+/// Find a genuine SYSTEM process ID by its executable name within the active console session.
+///
+/// Matches the process name, ensures it runs in the active console session, and validates
+/// that the process belongs to `NT AUTHORITY\SYSTEM` (S-1-5-18).
 pub fn find_process_id_by_name(target_process_name: &str) -> Result<u32, ElevateError> {
+    let active_session_id = get_active_session_id();
+
     let mut system_monitor = System::new();
     system_monitor.refresh_processes_specifics(
         ProcessesToUpdate::All,
@@ -119,7 +136,7 @@ pub fn find_process_id_by_name(target_process_name: &str) -> Result<u32, Elevate
     );
 
     for (process_id, process) in system_monitor.processes() {
-        if is_matching_system_process(process, target_process_name) {
+        if is_matching_system_process(process, target_process_name, active_session_id) {
             return Ok(process_id.as_u32());
         }
     }
@@ -129,8 +146,12 @@ pub fn find_process_id_by_name(target_process_name: &str) -> Result<u32, Elevate
     })
 }
 
-/// Check if a process instance matches the requested name and is owned by `NT AUTHORITY\SYSTEM`.
-fn is_matching_system_process(process: &Process, target_process_name: &str) -> bool {
+/// Check if a process matches the requested name, active session, and `NT AUTHORITY\SYSTEM` ownership.
+fn is_matching_system_process(
+    process: &Process,
+    target_process_name: &str,
+    target_session_id: u32,
+) -> bool {
     let process_name = process.name().to_string_lossy();
     if !process_name.eq_ignore_ascii_case(target_process_name) {
         return false;
@@ -141,6 +162,15 @@ fn is_matching_system_process(process: &Process, target_process_name: &str) -> b
         Ok(valid_token) => valid_token,
         Err(_) => return false,
     };
+
+    let session_id = match token.query_session_id() {
+        Ok(retrieved_session) => retrieved_session,
+        Err(_) => return false,
+    };
+
+    if session_id != target_session_id {
+        return false;
+    }
 
     let user_sid = match token.query_user_sid_string() {
         Ok(valid_sid) => valid_sid,

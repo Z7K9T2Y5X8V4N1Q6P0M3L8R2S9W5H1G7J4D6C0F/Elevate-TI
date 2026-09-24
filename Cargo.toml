@@ -18,10 +18,26 @@ version = "0.58"
 features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Environment", "Win32_System_RemoteDesktop", "Win32_System_Services", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"]
 
 [lints.clippy]
-missing_docs_in_private_items = "warn"
-nursery = { level = "warn", priority = 0 }
-pedantic = { level = "warn", priority = -1 }
-unwrap_used = { level = "deny", priority = 1 }
+all = { level = "deny", priority = -1 }
+arithmetic_side_effects = "deny"
+clone_on_ref_ptr = "deny"
+dbg_macro = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+missing_docs_in_private_items = "deny"
+nursery = { level = "deny", priority = -1 }
+panic = "deny"
+pedantic = { level = "deny", priority = -1 }
+print_stderr = "deny"
+print_stdout = "deny"
+rc_buffer = "deny"
+rc_mutex = "deny"
+rest_pat_in_fully_bound_structs = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+unwrap_used = "deny"
 
 [lints.rust]
 missing_docs = "deny"
+warnings = "deny"

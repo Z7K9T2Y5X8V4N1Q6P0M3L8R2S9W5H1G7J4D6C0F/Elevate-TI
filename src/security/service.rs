@@ -95,10 +95,11 @@ impl ServiceHandle {
         let start_time = Instant::now();
 
         loop {
-            if start_time.elapsed() > timeout {
+            let elapsed_time = start_time.elapsed();
+            if elapsed_time > timeout {
                 return Err(ElevateError::ServiceWaitTimeout {
                     service_name: "TrustedInstaller".to_string(),
-                    elapsed_seconds: timeout.as_secs(),
+                    elapsed_seconds: elapsed_time.as_secs(),
                 });
             }
 

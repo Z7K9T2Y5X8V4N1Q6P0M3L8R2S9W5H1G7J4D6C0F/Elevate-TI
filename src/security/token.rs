@@ -274,8 +274,8 @@ impl ProcessToken {
     }
 
     /// Check whether this token holds membership in the specified SID string.
-    pub fn contains_sid_string(&self, target_sid_string: PCWSTR) -> Result<bool, ElevateError> {
-        let target_sid = Sid::parse(target_sid_string)?;
+    pub fn contains_sid_string(&self, target_sid_pcwstr: PCWSTR) -> Result<bool, ElevateError> {
+        let target_sid = Sid::parse(target_sid_pcwstr)?;
         let groups = self.query_groups()?;
 
         Ok(groups

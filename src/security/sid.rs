@@ -57,9 +57,9 @@ impl LocalAllocatedStringGuard {
 
 impl Sid {
     /// Parse a security identifier from a wide string constant.
-    pub fn parse(sid_string: PCWSTR) -> Result<Self, ElevateError> {
+    pub fn parse(sid_pcwstr: PCWSTR) -> Result<Self, ElevateError> {
         let mut raw_sid = PSID::default();
-        win32_call!(ConvertStringSidToSidW(sid_string, &mut raw_sid))?;
+        win32_call!(ConvertStringSidToSidW(sid_pcwstr, &mut raw_sid))?;
         Ok(Self { raw_sid })
     }
 

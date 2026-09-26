@@ -10,7 +10,7 @@ use crate::{
 };
 
 /// TrustedInstaller Service Well-Known SID string (`NT SERVICE\TrustedInstaller`).
-const TRUSTEDINSTALLER_SID_STRING: PCWSTR =
+const TRUSTEDINSTALLER_SID: PCWSTR =
     w!("S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464");
 
 /// Primary desktop window station path.
@@ -29,7 +29,7 @@ pub enum ElevationStatus {
 pub fn check_elevation_status() -> Result<ElevationStatus, ElevateError> {
     let current_token = ProcessToken::current_process()?;
 
-    let is_elevated = current_token.contains_sid_string(TRUSTEDINSTALLER_SID_STRING)?;
+    let is_elevated = current_token.contains_sid_string(TRUSTEDINSTALLER_SID)?;
     if is_elevated {
         Ok(ElevationStatus::TrustedInstaller)
     } else {

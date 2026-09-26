@@ -28,10 +28,7 @@ use windows::{
     core::{HSTRING, PCWSTR, PWSTR},
 };
 
-use super::{
-    macros::{require_some, win32_call},
-    token::ProcessToken,
-};
+use super::{macros::win32_call, token::ProcessToken};
 use crate::error::ElevateError;
 
 /// Well-Known Local System Account SID (`NT AUTHORITY\SYSTEM`).
@@ -69,8 +66,9 @@ impl<'a> ProcessSpawner<'a> {
 
     /// Spawn the target process under the elevated token.
     pub fn spawn(self) -> Result<(), ElevateError> {
-        let executable_path =
-            require_some!(self.executable_path, ElevateError::ExecutablePathMissing);
+        let executable_path = self
+            .executable_path
+            .ok_or(ElevateError::ExecutablePathMissing)?;
 
         let environment_block_guard = EnvironmentBlockGuard::create(self.token)?;
 

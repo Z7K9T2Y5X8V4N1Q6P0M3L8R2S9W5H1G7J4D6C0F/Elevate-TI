@@ -15,15 +15,4 @@ macro_rules! win32_call {
     };
 }
 
-/// Unwraps an [`Option<T>`], returning `T` or early-returning with the specified error expression.
-macro_rules! require_some {
-    ($optional_value:expr, $error_expression:expr) => {
-        match $optional_value {
-            Some(inner_value) => inner_value,
-            None => return Err($error_expression),
-        }
-    };
-}
-
-pub(crate) use require_some;
 pub(crate) use win32_call;

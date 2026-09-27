@@ -49,7 +49,7 @@ pub fn relaunch_as_trustedinstaller() -> Result<(), ElevateError> {
         .start_and_wait(Duration::from_secs(30))?;
 
     // 3. Step into SYSTEM context via winlogon, then duplicate TrustedInstaller Primary Token.
-    let active_session_id = security::process::get_active_session_id();
+    let active_session_id = security::get_active_session_id();
     let primary_token = {
         let winlogon_process_id = security::find_process_id_by_name("winlogon.exe")?;
         let _impersonation_guard = ProcessToken::from_process_id(winlogon_process_id)?

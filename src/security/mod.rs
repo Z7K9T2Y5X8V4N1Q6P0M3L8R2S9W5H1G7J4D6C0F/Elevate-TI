@@ -13,7 +13,7 @@ pub mod service;
 pub mod sid;
 pub mod token;
 
-pub use process::{ProcessSpawner, find_process_id_by_name};
+pub use process::{ProcessSpawner, find_process_id_by_name, get_active_session_id};
 pub use service::ServiceManager;
 pub use sid::Sid;
 pub use token::{Privilege, ProcessToken, TokenType};

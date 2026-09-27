@@ -207,7 +207,7 @@ impl ProcessToken {
             self.handle,
             TokenSessionId,
             Some(ptr::from_mut(&mut session_id).cast()),
-            mem::size_of::<u32>() as u32,
+            mem::size_of::<u32>() as _,
             &mut return_length,
         ))?;
 
@@ -250,7 +250,7 @@ impl ProcessToken {
             self.handle,
             false,
             Some(ptr::from_ref(&token_privileges)),
-            mem::size_of::<TOKEN_PRIVILEGES>() as u32,
+            mem::size_of::<TOKEN_PRIVILEGES>() as _,
             None,
             None,
         ))?;
@@ -373,10 +373,7 @@ impl TokenGroupsBuffer {
     fn iter(&self) -> impl Iterator<Item = PSID> + '_ {
         let token_groups = unsafe { &*self._buffer.as_ptr().cast::<TOKEN_GROUPS>() };
         let slice = unsafe {
-            std::slice::from_raw_parts(
-                token_groups.Groups.as_ptr(),
-                token_groups.GroupCount as usize,
-            )
+            std::slice::from_raw_parts(token_groups.Groups.as_ptr(), token_groups.GroupCount as _)
         };
         slice.iter().map(|group| group.Sid)
     }

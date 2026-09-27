@@ -80,7 +80,7 @@ impl<'a> ProcessSpawner<'a> {
         let current_directory_hstring = HSTRING::from(current_directory.as_os_str());
 
         let mut startup_info = STARTUPINFOW {
-            cb: mem::size_of::<STARTUPINFOW>() as u32,
+            cb: mem::size_of::<STARTUPINFOW>() as _,
             lpDesktop: PWSTR(self.desktop.as_ptr().cast_mut()),
             dwFlags: STARTF_USESHOWWINDOW,
             wShowWindow: SW_SHOWNORMAL.0 as u16,

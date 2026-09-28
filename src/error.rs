@@ -67,6 +67,13 @@ pub enum ElevateError {
         information_class: &'static str,
     },
 
+    /// Token information returned corrupted, truncated, or inconsistent internal counts.
+    #[error("Token information '{information_class}' contains corrupted or out-of-bounds data")]
+    InvalidTokenInformation {
+        /// Description of the token information that failed validation.
+        information_class: &'static str,
+    },
+
     /// A wide-character or binary SID buffer failed UTF-8 string conversion.
     #[error("Failed to parse SID string buffer as UTF-8")]
     SidStringConversionFailed,

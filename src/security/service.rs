@@ -112,22 +112,34 @@ impl ServiceHandle {
 
     /// Query the current service status and respond accordingly.
     fn poll_state(&self) -> Result<ServicePollOutcome, ElevateError> {
-        let mut status = SERVICE_STATUS_PROCESS::default();
-        let mut bytes_needed = 0u32;
+        // Use an aligned stack buffer matching the exact byte layout of SERVICE_STATUS_PROCESS.
+        #[repr(C, align(8))]
+        struct AlignedServiceStatusBuffer {
+            data: [u8; mem::size_of::<SERVICE_STATUS_PROCESS>()],
+        }
 
-        let status_slice = unsafe {
-            std::slice::from_raw_parts_mut(
-                ptr::from_mut(&mut status).cast(),
-                mem::size_of::<SERVICE_STATUS_PROCESS>(),
-            )
+        let mut aligned_buffer = AlignedServiceStatusBuffer {
+            data: [0u8; mem::size_of::<SERVICE_STATUS_PROCESS>()],
         };
+        let mut bytes_needed = 0u32;
 
         win32_call!(QueryServiceStatusEx(
             self.handle,
             SC_STATUS_PROCESS_INFO,
-            Some(status_slice),
+            Some(&mut aligned_buffer.data),
             &mut bytes_needed,
         ))?;
+
+        // SAFETY: SERVICE_STATUS_PROCESS contains only plain integer and enum types (Plain Old Data),
+        // the buffer matches its size and alignment, and has been populated by QueryServiceStatusEx.
+        let status: SERVICE_STATUS_PROCESS = unsafe {
+            ptr::read_unaligned(
+                aligned_buffer
+                    .data
+                    .as_ptr()
+                    .cast::<SERVICE_STATUS_PROCESS>(),
+            )
+        };
 
         match status.dwCurrentState {
             SERVICE_STOPPED => {

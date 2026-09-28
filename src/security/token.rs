@@ -13,10 +13,10 @@ use windows::{
         Security::{
             AdjustTokenPrivileges, DuplicateTokenEx, EqualSid, GetTokenInformation,
             ImpersonateLoggedOnUser, LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, PSID,
-            RevertToSelf, SE_PRIVILEGE_ENABLED, SecurityImpersonation, SetTokenInformation,
-            TOKEN_ACCESS_MASK, TOKEN_ADJUST_PRIVILEGES, TOKEN_ALL_ACCESS, TOKEN_GROUPS,
-            TOKEN_INFORMATION_CLASS, TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_TYPE, TOKEN_USER,
-            TokenGroups, TokenImpersonation, TokenPrimary, TokenSessionId, TokenUser,
+            RevertToSelf, SE_PRIVILEGE_ENABLED, SID_AND_ATTRIBUTES, SecurityImpersonation,
+            SetTokenInformation, TOKEN_ACCESS_MASK, TOKEN_ADJUST_PRIVILEGES, TOKEN_ALL_ACCESS,
+            TOKEN_GROUPS, TOKEN_INFORMATION_CLASS, TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_TYPE,
+            TOKEN_USER, TokenGroups, TokenImpersonation, TokenPrimary, TokenSessionId, TokenUser,
         },
         System::{
             SystemServices::MAXIMUM_ALLOWED,
@@ -269,6 +269,12 @@ impl ProcessToken {
     /// Retrieve the owner user SID string of this token.
     pub fn query_user_sid_string(&self) -> Result<String, ElevateError> {
         let aligned_buffer = query_token_information_buffer(self.handle, TokenUser, "TokenUser")?;
+        if aligned_buffer.size() < mem::size_of::<TOKEN_USER>() {
+            return Err(ElevateError::InvalidTokenInformation {
+                information_class: "TokenUser",
+            });
+        }
+
         let token_user = unsafe { &*aligned_buffer.as_ptr().cast::<TOKEN_USER>() };
         Sid::to_string_from_raw(token_user.User.Sid)
     }
@@ -287,16 +293,15 @@ impl ProcessToken {
     fn query_groups(&self) -> Result<TokenGroupsBuffer, ElevateError> {
         let aligned_buffer =
             query_token_information_buffer(self.handle, TokenGroups, "TokenGroups")?;
-        Ok(TokenGroupsBuffer {
-            _buffer: aligned_buffer,
-        })
+        TokenGroupsBuffer::try_from_buffer(aligned_buffer)
     }
 }
 
-/// Dynamically allocated buffer guaranteed to satisfy 8-byte pointer alignment.
+/// Dynamically allocated buffer guaranteed to satisfy pointer alignment.
 struct AlignedTokenBuffer {
     pointer: *mut u8,
     layout: Layout,
+    size_in_bytes: usize,
 }
 
 impl Drop for AlignedTokenBuffer {
@@ -317,7 +322,11 @@ impl AlignedTokenBuffer {
         if pointer.is_null() {
             None
         } else {
-            Some(Self { pointer, layout })
+            Some(Self {
+                pointer,
+                layout,
+                size_in_bytes,
+            })
         }
     }
 
@@ -327,6 +336,10 @@ impl AlignedTokenBuffer {
 
     fn as_mut_ptr(&mut self) -> *mut u8 {
         self.pointer
+    }
+
+    const fn size(&self) -> usize {
+        self.size_in_bytes
     }
 }
 
@@ -365,17 +378,60 @@ fn query_token_information_buffer(
 
 /// RAII wrapper managing an aligned dynamic buffer holding a [`TOKEN_GROUPS`] structure.
 struct TokenGroupsBuffer {
-    _buffer: AlignedTokenBuffer,
+    buffer: AlignedTokenBuffer,
+    validated_group_count: usize,
 }
 
 impl TokenGroupsBuffer {
+    /// Construct a verified token groups wrapper, ensuring group counts never exceed buffer bounds.
+    fn try_from_buffer(buffer: AlignedTokenBuffer) -> Result<Self, ElevateError> {
+        let groups_offset = mem::offset_of!(TOKEN_GROUPS, Groups);
+
+        let available_bytes_for_groups = buffer.size().checked_sub(groups_offset).ok_or(
+            ElevateError::InvalidTokenInformation {
+                information_class: "TokenGroups",
+            },
+        )?;
+
+        let single_group_size = mem::size_of::<SID_AND_ATTRIBUTES>();
+        if single_group_size == 0 {
+            return Err(ElevateError::InvalidTokenInformation {
+                information_class: "TokenGroups",
+            });
+        }
+
+        // Calculate theoretical maximum group elements the buffer can physically contain.
+        let max_allowed_groups = available_bytes_for_groups
+            .checked_div(single_group_size)
+            .ok_or(ElevateError::InvalidTokenInformation {
+                information_class: "TokenGroups",
+            })?;
+
+        let token_groups_header = unsafe { &*buffer.as_ptr().cast::<TOKEN_GROUPS>() };
+        let declared_group_count = token_groups_header.GroupCount as usize;
+
+        if declared_group_count > max_allowed_groups {
+            return Err(ElevateError::InvalidTokenInformation {
+                information_class: "TokenGroups",
+            });
+        }
+
+        Ok(Self {
+            buffer,
+            validated_group_count: declared_group_count,
+        })
+    }
+
     /// Expose safe borrowed references to each group `PSID`.
     fn iter(&self) -> impl Iterator<Item = PSID> + '_ {
-        let token_groups = unsafe { &*self._buffer.as_ptr().cast::<TOKEN_GROUPS>() };
+        let token_groups = unsafe { &*self.buffer.as_ptr().cast::<TOKEN_GROUPS>() };
         let slice = unsafe {
-            std::slice::from_raw_parts(token_groups.Groups.as_ptr(), token_groups.GroupCount as _)
+            std::slice::from_raw_parts(token_groups.Groups.as_ptr(), self.validated_group_count)
         };
-        slice.iter().map(|group| group.Sid)
+        slice
+            .iter()
+            .filter(|group| !group.Sid.is_invalid())
+            .map(|group| group.Sid)
     }
 }
 

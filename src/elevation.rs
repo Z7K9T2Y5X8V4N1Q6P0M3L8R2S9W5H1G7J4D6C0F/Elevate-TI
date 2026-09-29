@@ -39,19 +39,20 @@ pub fn check_elevation_status() -> Result<ElevationStatus, ElevateError> {
 
 /// Restart the current application under the TrustedInstaller identity in the active user session.
 pub fn relaunch_as_trustedinstaller() -> Result<(), ElevateError> {
-    // 1. Enable administrative debugging and impersonation privileges.
-    ProcessToken::current_process()?
-        .enable_privileges(&[Privilege::Debug, Privilege::Impersonate])?;
+    // 1. Enable administrative debugging and impersonation privileges, and retrieve current session ID.
+    let current_token = ProcessToken::current_process()?;
+    current_token.enable_privileges(&[Privilege::Debug, Privilege::Impersonate])?;
+    let caller_session_id = current_token.query_session_id()?;
 
     // 2. Ensure TrustedInstaller service is running and fetch its PID.
     let trustedinstaller_process_id = ServiceManager::open()?
         .open_service(w!("TrustedInstaller"))?
         .start_and_wait(Duration::from_secs(30))?;
 
-    // 3. Step into SYSTEM context via winlogon, then duplicate TrustedInstaller Primary Token.
-    let active_session_id = security::get_active_session_id();
+    // 3. Step into SYSTEM context via winlogon of the current session, then duplicate TrustedInstaller Primary Token.
     let primary_token = {
-        let winlogon_process_id = security::find_process_id_by_name("winlogon.exe")?;
+        let winlogon_process_id =
+            security::find_process_id_by_name("winlogon.exe", caller_session_id)?;
         let _impersonation_guard = ProcessToken::from_process_id(winlogon_process_id)?
             .duplicate(TokenType::Impersonation)?
             .impersonate()?;
@@ -60,8 +61,8 @@ pub fn relaunch_as_trustedinstaller() -> Result<(), ElevateError> {
         let token = ProcessToken::from_process_id(trustedinstaller_process_id)?
             .duplicate(TokenType::Primary)?;
 
-        // Breakthrough Session 0 isolation: explicitly bind the token to the active console session.
-        token.assign_session_id(active_session_id)?;
+        // Breakthrough Session 0 isolation: explicitly bind the token to the caller's session.
+        token.assign_session_id(caller_session_id)?;
         token
     };
 

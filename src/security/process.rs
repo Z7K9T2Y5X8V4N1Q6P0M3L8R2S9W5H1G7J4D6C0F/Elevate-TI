@@ -17,7 +17,6 @@ use windows::{
         Foundation::CloseHandle,
         System::{
             Environment::{CreateEnvironmentBlock, DestroyEnvironmentBlock},
-            RemoteDesktop::WTSGetActiveConsoleSessionId,
             Threading::{
                 CREATE_PROCESS_LOGON_FLAGS, CREATE_UNICODE_ENVIRONMENT, CreateProcessWithTokenW,
                 PROCESS_INFORMATION, STARTF_USESHOWWINDOW, STARTUPINFOW,
@@ -107,18 +106,14 @@ impl<'a> ProcessSpawner<'a> {
     }
 }
 
-/// Retrieve the active console session ID for the current interactive desktop.
-pub fn get_active_session_id() -> u32 {
-    unsafe { WTSGetActiveConsoleSessionId() }
-}
-
-/// Find a genuine SYSTEM process ID by its executable name within the active console session.
+/// Find a genuine SYSTEM process ID by its executable name within a designated session.
 ///
-/// Matches the process name, ensures it runs in the active console session, and validates
+/// Matches the process name, ensures it runs in the specified session ID, and validates
 /// that the process belongs to `NT AUTHORITY\SYSTEM` (S-1-5-18).
-pub fn find_process_id_by_name(target_process_name: &str) -> Result<u32, ElevateError> {
-    let active_session_id = get_active_session_id();
-
+pub fn find_process_id_by_name(
+    target_process_name: &str,
+    target_session_id: u32,
+) -> Result<u32, ElevateError> {
     let mut system_monitor = System::new();
     system_monitor.refresh_processes_specifics(
         ProcessesToUpdate::All,
@@ -127,7 +122,7 @@ pub fn find_process_id_by_name(target_process_name: &str) -> Result<u32, Elevate
     );
 
     for (process_id, process) in system_monitor.processes() {
-        if is_matching_system_process(process, target_process_name, active_session_id) {
+        if is_matching_system_process(process, target_process_name, target_session_id) {
             return Ok(process_id.as_u32());
         }
     }

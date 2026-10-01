@@ -7,8 +7,8 @@ use std::{
     env,
     ffi::c_void,
     mem,
-    path::PathBuf,
-    ptr::{self},
+    path::{Path, PathBuf},
+    ptr,
 };
 
 use sysinfo::{Process, ProcessRefreshKind, ProcessesToUpdate, System};
@@ -37,6 +37,7 @@ const LOCAL_SYSTEM_SID: &str = "S-1-5-18";
 pub struct ProcessSpawner<'a> {
     token: &'a ProcessToken,
     executable_path: Option<PathBuf>,
+    command_line: Option<String>,
     desktop: HSTRING,
 }
 
@@ -46,6 +47,7 @@ impl<'a> ProcessSpawner<'a> {
         Self {
             token,
             executable_path: None,
+            command_line: None,
             desktop: HSTRING::new(),
         }
     }
@@ -57,22 +59,39 @@ impl<'a> ProcessSpawner<'a> {
         Ok(self)
     }
 
+    /// Set an arbitrary target executable path.
+    pub fn executable_path(mut self, path: impl AsRef<Path>) -> Self {
+        self.executable_path = Some(path.as_ref().to_path_buf());
+        self
+    }
+
+    /// Set a custom command line string to pass to the process.
+    pub fn command_line(mut self, command_line: impl Into<String>) -> Self {
+        self.command_line = Some(command_line.into());
+        self
+    }
+
     /// Set the target desktop station name.
     pub fn desktop(mut self, desktop_name: &str) -> Self {
         self.desktop = HSTRING::from(desktop_name);
         self
     }
 
-    /// Spawn the target process under the elevated token.
+    /// Spawn the target process under the provided token.
     pub fn spawn(self) -> Result<(), ElevateError> {
-        let executable_path = self
-            .executable_path
-            .ok_or(ElevateError::ExecutablePathMissing)?;
+        let command_line_string = if let Some(custom_command_line) = self.command_line {
+            custom_command_line
+        } else if let Some(ref executable_path) = self.executable_path {
+            format!("\"{}\"", executable_path.display())
+        } else {
+            return Err(ElevateError::ExecutablePathMissing);
+        };
 
         let environment_block_guard = EnvironmentBlockGuard::create(self.token)?;
 
-        let mut command_line_buffer: Vec<u16> = format!("\"{}\"\0", executable_path.display())
+        let mut command_line_buffer: Vec<u16> = command_line_string
             .encode_utf16()
+            .chain(std::iter::once(0))
             .collect();
 
         let current_directory = env::current_dir()?;

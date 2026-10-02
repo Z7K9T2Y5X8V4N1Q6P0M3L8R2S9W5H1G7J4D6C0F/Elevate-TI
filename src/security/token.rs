@@ -56,6 +56,10 @@ pub enum Privilege {
     Debug,
     /// Impersonate a client after authentication (`SeImpersonatePrivilege`).
     Impersonate,
+    /// Back up files and directories (`SeBackupPrivilege`).
+    Backup,
+    /// Restore files and directories (`SeRestorePrivilege`).
+    Restore,
 }
 
 impl Privilege {
@@ -63,6 +67,8 @@ impl Privilege {
         match self {
             Self::Debug => w!("SeDebugPrivilege"),
             Self::Impersonate => w!("SeImpersonatePrivilege"),
+            Self::Backup => w!("SeBackupPrivilege"),
+            Self::Restore => w!("SeRestorePrivilege"),
         }
     }
 
@@ -70,6 +76,8 @@ impl Privilege {
         match self {
             Self::Debug => "SeDebugPrivilege",
             Self::Impersonate => "SeImpersonatePrivilege",
+            Self::Backup => "SeBackupPrivilege",
+            Self::Restore => "SeRestorePrivilege",
         }
     }
 }

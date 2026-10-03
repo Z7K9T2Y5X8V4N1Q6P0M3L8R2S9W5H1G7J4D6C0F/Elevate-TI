@@ -35,7 +35,7 @@ const LOCAL_SYSTEM_SID: &str = "S-1-5-18";
 
 /// Fluent builder for launching a process using a duplicated primary token.
 pub struct ProcessSpawner<'a> {
-    token: &'a ProcessToken,
+    primary_token: &'a ProcessToken,
     executable_path: Option<PathBuf>,
     command_line: Option<String>,
     desktop: HSTRING,
@@ -43,9 +43,9 @@ pub struct ProcessSpawner<'a> {
 
 impl<'a> ProcessSpawner<'a> {
     /// Create a new process spawner bound to an elevated primary token.
-    pub fn new_with_token(token: &'a ProcessToken) -> Self {
+    pub fn new_with_token(primary_token: &'a ProcessToken) -> Self {
         Self {
-            token,
+            primary_token,
             executable_path: None,
             command_line: None,
             desktop: HSTRING::new(),
@@ -87,7 +87,7 @@ impl<'a> ProcessSpawner<'a> {
             return Err(ElevateError::ExecutablePathMissing);
         };
 
-        let environment_block_guard = EnvironmentBlockGuard::create(self.token)?;
+        let environment_block_guard = EnvironmentBlockGuard::create(self.primary_token)?;
 
         let mut command_line_buffer: Vec<u16> = command_line_string
             .encode_utf16()
@@ -110,7 +110,7 @@ impl<'a> ProcessSpawner<'a> {
         // Use flag value 0 (no profile load) because service accounts
         // like TrustedInstaller do not own standard user profile registry hives.
         win32_call!(CreateProcessWithTokenW(
-            self.token.raw(),
+            self.primary_token.raw(),
             CREATE_PROCESS_LOGON_FLAGS(0),
             PCWSTR::null(),
             PWSTR(command_line_buffer.as_mut_ptr()),
@@ -163,38 +163,38 @@ fn is_matching_system_process(
     }
 
     let candidate_process_id = process.pid().as_u32();
-    let token = match ProcessToken::from_process_id(candidate_process_id) {
-        Ok(valid_token) => valid_token,
+    let candidate_process_token = match ProcessToken::from_process_id(candidate_process_id) {
+        Ok(candidate_process_token) => candidate_process_token,
         Err(_) => return false,
     };
 
-    let session_id = match token.query_session_id() {
-        Ok(retrieved_session) => retrieved_session,
+    let candidate_session_id = match candidate_process_token.query_session_id() {
+        Ok(candidate_session_id) => candidate_session_id,
         Err(_) => return false,
     };
 
-    if session_id != target_session_id {
+    if candidate_session_id != target_session_id {
         return false;
     }
 
-    let user_sid = match token.query_user_sid_string() {
-        Ok(valid_sid) => valid_sid,
+    let candidate_user_sid = match candidate_process_token.query_user_sid_string() {
+        Ok(candidate_user_sid) => candidate_user_sid,
         Err(_) => return false,
     };
 
-    user_sid == LOCAL_SYSTEM_SID
+    candidate_user_sid == LOCAL_SYSTEM_SID
 }
 
 /// RAII guard wrapping an environment block allocated by `CreateEnvironmentBlock`.
 struct EnvironmentBlockGuard {
-    block: *mut c_void,
+    environment_block_pointer: *mut c_void,
 }
 
 impl Drop for EnvironmentBlockGuard {
     fn drop(&mut self) {
-        if !self.block.is_null() {
+        if !self.environment_block_pointer.is_null() {
             unsafe {
-                let _ = DestroyEnvironmentBlock(self.block);
+                let _ = DestroyEnvironmentBlock(self.environment_block_pointer);
             }
         }
     }
@@ -203,17 +203,23 @@ impl Drop for EnvironmentBlockGuard {
 impl EnvironmentBlockGuard {
     /// Allocate an environment block specifically tailored to the given token.
     fn create(token: &ProcessToken) -> Result<Self, ElevateError> {
-        let mut block = ptr::null_mut();
-        win32_call!(CreateEnvironmentBlock(&mut block, token.raw(), false))?;
-        Ok(Self { block })
+        let mut environment_block_pointer = ptr::null_mut();
+        win32_call!(CreateEnvironmentBlock(
+            &mut environment_block_pointer,
+            token.raw(),
+            false
+        ))?;
+        Ok(Self {
+            environment_block_pointer,
+        })
     }
 
     /// Provide the raw environment block pointer expected by `CreateProcessWithTokenW`.
     fn as_raw_ptr(&self) -> Option<*const c_void> {
-        if self.block.is_null() {
+        if self.environment_block_pointer.is_null() {
             None
         } else {
-            Some(self.block.cast_const())
+            Some(self.environment_block_pointer.cast_const())
         }
     }
 }

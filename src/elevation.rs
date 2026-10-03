@@ -58,12 +58,13 @@ pub fn relaunch_as_trustedinstaller() -> Result<(), ElevateError> {
             .impersonate()?;
 
         // While executing under SYSTEM identity, duplicate TrustedInstaller's primary token.
-        let token = ProcessToken::from_process_id(trustedinstaller_process_id)?
-            .duplicate(TokenType::Primary)?;
+        let trustedinstaller_primary_token =
+            ProcessToken::from_process_id(trustedinstaller_process_id)?
+                .duplicate(TokenType::Primary)?;
 
         // Breakthrough Session 0 isolation: explicitly bind the token to the caller's session.
-        token.assign_session_id(caller_session_id)?;
-        token
+        trustedinstaller_primary_token.assign_session_id(caller_session_id)?;
+        trustedinstaller_primary_token
     };
 
     // 4. Spawn the elevated instance on the interactive desktop.

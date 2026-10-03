@@ -84,14 +84,14 @@ impl Privilege {
 
 /// Generic RAII auto-closing handle guard for standard Win32 OS handles.
 pub(crate) struct HandleGuard {
-    handle: HANDLE,
+    raw_handle: HANDLE,
 }
 
 impl Drop for HandleGuard {
     fn drop(&mut self) {
-        if !self.handle.is_invalid() {
+        if !self.raw_handle.is_invalid() {
             unsafe {
-                let _ = CloseHandle(self.handle);
+                let _ = CloseHandle(self.raw_handle);
             }
         }
     }
@@ -99,26 +99,26 @@ impl Drop for HandleGuard {
 
 impl HandleGuard {
     /// Encapsulate a raw OS handle inside an RAII closer.
-    pub const fn new(handle: HANDLE) -> Self {
-        Self { handle }
+    pub const fn new(raw_handle: HANDLE) -> Self {
+        Self { raw_handle }
     }
 
     /// Access the underlying raw handle without relinquishing ownership.
     pub const fn raw(&self) -> HANDLE {
-        self.handle
+        self.raw_handle
     }
 }
 
 /// Strongly-typed RAII guard holding an open process or thread token.
 pub struct ProcessToken {
-    handle: HANDLE,
+    token_handle: HANDLE,
 }
 
 impl Drop for ProcessToken {
     fn drop(&mut self) {
-        if !self.handle.is_invalid() {
+        if !self.token_handle.is_invalid() {
             unsafe {
-                let _ = CloseHandle(self.handle);
+                let _ = CloseHandle(self.token_handle);
             }
         }
     }
@@ -126,8 +126,8 @@ impl Drop for ProcessToken {
 
 impl ProcessToken {
     /// Encapsulate an existing raw Win32 token handle inside an RAII closer.
-    pub const fn from_raw_handle(handle: HANDLE) -> Self {
-        Self { handle }
+    pub const fn from_raw_handle(token_handle: HANDLE) -> Self {
+        Self { token_handle }
     }
 
     /// Open the token belonging to the current application process.
@@ -152,7 +152,7 @@ impl ProcessToken {
 
     /// Retrieve the underlying raw Win32 token handle.
     pub const fn raw(&self) -> HANDLE {
-        self.handle
+        self.token_handle
     }
 
     /// Open a process token with the requested access mask.
@@ -167,9 +167,7 @@ impl ProcessToken {
             &mut token_handle
         ))?;
 
-        Ok(Self {
-            handle: token_handle,
-        })
+        Ok(Self { token_handle })
     }
 
     /// Duplicate this token as either a Primary or Impersonation token.
@@ -179,25 +177,25 @@ impl ProcessToken {
             TokenType::Impersonation => TOKEN_ACCESS_MASK(MAXIMUM_ALLOWED),
         };
 
-        let mut duplicated_handle = HANDLE::default();
+        let mut duplicated_token_handle = HANDLE::default();
         win32_call!(DuplicateTokenEx(
-            self.handle,
+            self.token_handle,
             access_mask,
             None,
             SecurityImpersonation,
             token_type.to_raw(),
-            &mut duplicated_handle,
+            &mut duplicated_token_handle,
         ))?;
 
         Ok(Self {
-            handle: duplicated_handle,
+            token_handle: duplicated_token_handle,
         })
     }
 
     /// Assign a specific Windows Session ID to this token.
     pub fn assign_session_id(&self, session_id: u32) -> Result<(), ElevateError> {
         win32_call!(SetTokenInformation(
-            self.handle,
+            self.token_handle,
             TokenSessionId,
             ptr::from_ref(&session_id).cast(),
             mem::size_of::<u32>() as _,
@@ -212,7 +210,7 @@ impl ProcessToken {
         let mut return_length = 0u32;
 
         win32_call!(GetTokenInformation(
-            self.handle,
+            self.token_handle,
             TokenSessionId,
             Some(ptr::from_mut(&mut session_id).cast()),
             mem::size_of::<u32>() as _,
@@ -224,7 +222,7 @@ impl ProcessToken {
 
     /// Impersonate this token on the current thread, returning an RAII guard.
     pub fn impersonate(&self) -> Result<ImpersonationGuard, ElevateError> {
-        win32_call!(ImpersonateLoggedOnUser(self.handle))?;
+        win32_call!(ImpersonateLoggedOnUser(self.token_handle))?;
         Ok(ImpersonationGuard)
     }
 
@@ -255,7 +253,7 @@ impl ProcessToken {
 
         unsafe { SetLastError(WIN32_ERROR(0)) };
         win32_call!(AdjustTokenPrivileges(
-            self.handle,
+            self.token_handle,
             false,
             Some(ptr::from_ref(&token_privileges)),
             mem::size_of::<TOKEN_PRIVILEGES>() as _,
@@ -276,7 +274,8 @@ impl ProcessToken {
 
     /// Retrieve the owner user SID string of this token.
     pub fn query_user_sid_string(&self) -> Result<String, ElevateError> {
-        let aligned_buffer = query_token_information_buffer(self.handle, TokenUser, "TokenUser")?;
+        let aligned_buffer =
+            query_token_information_buffer(self.token_handle, TokenUser, "TokenUser")?;
         if aligned_buffer.size() < mem::size_of::<TOKEN_USER>() {
             return Err(ElevateError::InvalidTokenInformation {
                 information_class: "TokenUser",
@@ -300,7 +299,7 @@ impl ProcessToken {
     /// Safely query and retrieve all groups associated with this token.
     fn query_groups(&self) -> Result<TokenGroupsBuffer, ElevateError> {
         let aligned_buffer =
-            query_token_information_buffer(self.handle, TokenGroups, "TokenGroups")?;
+            query_token_information_buffer(self.token_handle, TokenGroups, "TokenGroups")?;
         TokenGroupsBuffer::try_from_buffer(aligned_buffer)
     }
 }
@@ -433,13 +432,13 @@ impl TokenGroupsBuffer {
     /// Expose safe borrowed references to each group `PSID`.
     fn iter(&self) -> impl Iterator<Item = PSID> + '_ {
         let token_groups = unsafe { &*self.buffer.as_ptr().cast::<TOKEN_GROUPS>() };
-        let slice = unsafe {
+        let group_attributes_slice = unsafe {
             std::slice::from_raw_parts(token_groups.Groups.as_ptr(), self.validated_group_count)
         };
-        slice
+        group_attributes_slice
             .iter()
-            .filter(|group| !group.Sid.is_invalid())
-            .map(|group| group.Sid)
+            .filter(|sid_and_attributes| !sid_and_attributes.Sid.is_invalid())
+            .map(|sid_and_attributes| sid_and_attributes.Sid)
     }
 }
 

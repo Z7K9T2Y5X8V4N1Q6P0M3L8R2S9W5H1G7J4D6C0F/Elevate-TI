@@ -35,14 +35,14 @@ enum ServicePollOutcome {
 
 /// RAII handle wrapping an active Service Control Manager connection.
 pub struct ServiceManager {
-    handle: SC_HANDLE,
+    service_manager_handle: SC_HANDLE,
 }
 
 impl Drop for ServiceManager {
     fn drop(&mut self) {
-        if !self.handle.is_invalid() {
+        if !self.service_manager_handle.is_invalid() {
             unsafe {
-                let _ = CloseServiceHandle(self.handle);
+                let _ = CloseServiceHandle(self.service_manager_handle);
             }
         }
     }
@@ -51,37 +51,39 @@ impl Drop for ServiceManager {
 impl ServiceManager {
     /// Open a connection to the local Service Control Manager.
     pub fn open() -> Result<Self, ElevateError> {
-        let handle = win32_call!(OpenSCManagerW(
+        let service_manager_handle = win32_call!(OpenSCManagerW(
             PCWSTR::null(),
             PCWSTR::null(),
             SC_MANAGER_CONNECT
         ))?;
 
-        Ok(Self { handle })
+        Ok(Self {
+            service_manager_handle,
+        })
     }
 
     /// Open a specific service with query and start capabilities.
     pub fn open_service(&self, service_name: PCWSTR) -> Result<ServiceHandle, ElevateError> {
-        let handle = win32_call!(OpenServiceW(
-            self.handle,
+        let service_handle = win32_call!(OpenServiceW(
+            self.service_manager_handle,
             service_name,
             SERVICE_QUERY_STATUS | SERVICE_QUERY_CONFIG | SERVICE_START,
         ))?;
 
-        Ok(ServiceHandle { handle })
+        Ok(ServiceHandle { service_handle })
     }
 }
 
 /// RAII handle wrapping an individual Windows service.
 pub struct ServiceHandle {
-    handle: SC_HANDLE,
+    service_handle: SC_HANDLE,
 }
 
 impl Drop for ServiceHandle {
     fn drop(&mut self) {
-        if !self.handle.is_invalid() {
+        if !self.service_handle.is_invalid() {
             unsafe {
-                let _ = CloseServiceHandle(self.handle);
+                let _ = CloseServiceHandle(self.service_handle);
             }
         }
     }
@@ -124,7 +126,7 @@ impl ServiceHandle {
         let mut bytes_needed = 0u32;
 
         win32_call!(QueryServiceStatusEx(
-            self.handle,
+            self.service_handle,
             SC_STATUS_PROCESS_INFO,
             Some(&mut aligned_buffer.data),
             &mut bytes_needed,
@@ -160,7 +162,7 @@ impl ServiceHandle {
 
     /// Trigger service execution, ignoring the benign error if it was already running.
     fn trigger_start(&self) -> Result<(), ElevateError> {
-        let invocation_result = win32_call!(StartServiceW(self.handle, None));
+        let invocation_result = win32_call!(StartServiceW(self.service_handle, None));
         match invocation_result {
             Ok(()) => Ok(()),
             Err(ElevateError::Win32 { ref source, .. })

@@ -1,4 +1,4 @@
-//! A safe, idiomatic Rust library to obtain Windows TrustedInstaller privileges.
+//! A safe, idiomatic Rust library to obtain Windows `TrustedInstaller` privileges.
 
 pub mod error;
 

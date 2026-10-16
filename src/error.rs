@@ -1,4 +1,4 @@
-//! Domain error types for TrustedInstaller elevation operations.
+//! Domain error types for `TrustedInstaller` elevation operations.
 
 use std::io;
 use thiserror::Error;

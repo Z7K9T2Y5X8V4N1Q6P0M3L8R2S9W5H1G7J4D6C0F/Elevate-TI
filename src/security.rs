@@ -1,0 +1,16 @@
+//! Idiomatic, safe Win32 security primitives.
+
+pub mod sid;
+
+pub use sid::Sid;
+
+/// Internal helper macro to eliminate repetitive Win32 result mapping boilerplate.
+macro_rules! win32 {
+    ($func:ident ( $($arg:tt)* )) => {
+        unsafe { $func($($arg)*) }.map_err(|source| $crate::error::ElevateError::Win32 {
+            operation: stringify!($func),
+            source,
+        })
+    };
+}
+pub(crate) use win32;

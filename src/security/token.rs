@@ -1,0 +1,205 @@
+//! Process and thread security token manipulation.
+
+use std::{mem, ptr};
+
+use windows::{
+    Win32::{
+        Foundation::{
+            CloseHandle, ERROR_SUCCESS, GetLastError, HANDLE, LUID, SetLastError, WIN32_ERROR,
+        },
+        Security::{
+            AdjustTokenPrivileges, DuplicateTokenEx, GetTokenInformation, ImpersonateLoggedOnUser,
+            LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, RevertToSelf, SE_PRIVILEGE_ENABLED,
+            SecurityImpersonation, SetTokenInformation, TOKEN_ACCESS_MASK, TOKEN_ADJUST_PRIVILEGES,
+            TOKEN_ALL_ACCESS, TOKEN_PRIVILEGES, TOKEN_QUERY, TokenImpersonation, TokenPrimary,
+            TokenSessionId,
+        },
+        System::{
+            SystemServices::MAXIMUM_ALLOWED,
+            Threading::{
+                GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_INFORMATION,
+            },
+        },
+    },
+    core::PCWSTR,
+};
+
+use super::{privilege::Privilege, win32};
+use crate::error::ElevateError;
+
+/// Target token type when duplicating an existing security token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenType {
+    /// Primary token for launching new process instances.
+    Primary,
+    /// Impersonation token for thread-level security context borrowing.
+    Impersonation,
+}
+
+/// Strongly-typed RAII guard holding an open process or thread token handle.
+pub struct Token(HANDLE);
+
+impl Drop for Token {
+    fn drop(&mut self) {
+        if !self.0.is_invalid() {
+            unsafe {
+                let _ = CloseHandle(self.0);
+            }
+        }
+    }
+}
+
+impl Token {
+    /// Open the token belonging to the current application process.
+    pub fn current() -> Result<Self, ElevateError> {
+        let mut handle = HANDLE::default();
+        win32!(OpenProcessToken(
+            GetCurrentProcess(),
+            TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+            &raw mut handle
+        ))?;
+        Ok(Self(handle))
+    }
+
+    /// Open the security token belonging to an arbitrary running process by PID.
+    pub fn from_pid(pid: u32) -> Result<Self, ElevateError> {
+        let proc = win32!(OpenProcess(PROCESS_QUERY_INFORMATION, false, pid))?;
+        let mut token = HANDLE::default();
+        let res = win32!(OpenProcessToken(
+            proc,
+            TOKEN_ACCESS_MASK(MAXIMUM_ALLOWED),
+            &raw mut token
+        ));
+        unsafe {
+            let _ = CloseHandle(proc);
+        }
+        res?;
+        Ok(Self(token))
+    }
+
+    /// Borrow the underlying raw Win32 `HANDLE`.
+    pub const fn as_raw(&self) -> HANDLE {
+        self.0
+    }
+
+    /// Duplicate this token as either a Primary or Impersonation token.
+    pub fn duplicate(&self, token_type: TokenType) -> Result<Self, ElevateError> {
+        let access = match token_type {
+            TokenType::Primary => TOKEN_ALL_ACCESS,
+            TokenType::Impersonation => TOKEN_ACCESS_MASK(MAXIMUM_ALLOWED),
+        };
+        let raw_type = match token_type {
+            TokenType::Primary => TokenPrimary,
+            TokenType::Impersonation => TokenImpersonation,
+        };
+
+        let mut dup = HANDLE::default();
+        win32!(DuplicateTokenEx(
+            self.0,
+            access,
+            None,
+            SecurityImpersonation,
+            raw_type,
+            &raw mut dup
+        ))?;
+        Ok(Self(dup))
+    }
+
+    /// Enable the specified administrative privileges on this token.
+    pub fn enable_privileges(&self, privileges: &[Privilege]) -> Result<(), ElevateError> {
+        for &privilege in privileges {
+            let mut luid = LUID::default();
+            win32!(LookupPrivilegeValueW(
+                PCWSTR::null(),
+                privilege.as_pcwstr(),
+                &raw mut luid
+            ))?;
+
+            let privs = TOKEN_PRIVILEGES {
+                PrivilegeCount: 1,
+                Privileges: [LUID_AND_ATTRIBUTES {
+                    Luid: luid,
+                    Attributes: SE_PRIVILEGE_ENABLED,
+                }],
+            };
+
+            unsafe { SetLastError(WIN32_ERROR(0)) };
+            win32!(AdjustTokenPrivileges(
+                self.0,
+                false,
+                Some(ptr::from_ref(&privs)),
+                mem::size_of::<TOKEN_PRIVILEGES>() as u32,
+                None,
+                None,
+            ))?;
+
+            if unsafe { GetLastError() } != ERROR_SUCCESS {
+                return Err(ElevateError::PrivilegeNotAssigned(privilege.as_str()));
+            }
+        }
+        Ok(())
+    }
+
+    /// Query the Windows Session ID currently associated with this token.
+    pub fn session_id(&self) -> Result<u32, ElevateError> {
+        let mut session_id = 0u32;
+        let mut len = 0u32;
+        win32!(GetTokenInformation(
+            self.0,
+            TokenSessionId,
+            Some(ptr::from_mut(&mut session_id).cast()),
+            mem::size_of::<u32>() as u32,
+            &raw mut len
+        ))?;
+        Ok(session_id)
+    }
+
+    /// Explicitly assign a Windows Session ID to this token.
+    pub fn set_session_id(&self, session_id: u32) -> Result<(), ElevateError> {
+        win32!(SetTokenInformation(
+            self.0,
+            TokenSessionId,
+            ptr::from_ref(&session_id).cast(),
+            mem::size_of::<u32>() as u32
+        ))?;
+        Ok(())
+    }
+
+    /// Impersonate this token on the current thread, returning an RAII revert guard.
+    pub fn impersonate(&self) -> Result<ImpersonationGuard, ElevateError> {
+        win32!(ImpersonateLoggedOnUser(self.0))?;
+        Ok(ImpersonationGuard)
+    }
+
+    /// Query raw token information bytes.
+    fn query_info_buffer(
+        &self,
+        class: windows::Win32::Security::TOKEN_INFORMATION_CLASS,
+    ) -> Result<Vec<u8>, ElevateError> {
+        let mut len = 0u32;
+        let _ = unsafe { GetTokenInformation(self.0, class, None, 0, &raw mut len) };
+        if len == 0 {
+            return Err(ElevateError::InvalidTokenBuffer);
+        }
+        let mut buf = vec![0u8; len as usize];
+        win32!(GetTokenInformation(
+            self.0,
+            class,
+            Some(buf.as_mut_ptr().cast()),
+            len,
+            &raw mut len
+        ))?;
+        Ok(buf)
+    }
+}
+
+/// RAII guard representing active thread impersonation.
+pub struct ImpersonationGuard;
+
+impl Drop for ImpersonationGuard {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = RevertToSelf();
+        }
+    }
+}

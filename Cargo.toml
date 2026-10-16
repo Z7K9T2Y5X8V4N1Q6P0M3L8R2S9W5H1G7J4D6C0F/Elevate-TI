@@ -24,6 +24,7 @@ features = [
 
 [lints.clippy]
 all = { level = "deny", priority = -1 }
+cast_possible_truncation = "allow"
 missing_errors_doc = "allow"
 must_use_candidate = "allow"
 pedantic = { level = "warn", priority = -1 }

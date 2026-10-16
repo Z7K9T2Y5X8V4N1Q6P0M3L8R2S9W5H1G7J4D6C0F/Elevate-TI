@@ -2,9 +2,11 @@
 
 pub mod privilege;
 pub mod sid;
+pub mod token;
 
 pub use privilege::Privilege;
 pub use sid::Sid;
+pub use token::{ImpersonationGuard, Token, TokenType};
 
 /// Internal helper macro to eliminate repetitive Win32 result mapping boilerplate.
 macro_rules! win32 {

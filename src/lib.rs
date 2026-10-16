@@ -4,4 +4,4 @@ pub mod error;
 pub mod security;
 
 pub use error::ElevateError;
-pub use security::Sid;
+pub use security::{Privilege, Sid};

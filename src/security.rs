@@ -1,7 +1,9 @@
 //! Idiomatic, safe Win32 security primitives.
 
+pub mod privilege;
 pub mod sid;
 
+pub use privilege::Privilege;
 pub use sid::Sid;
 
 /// Internal helper macro to eliminate repetitive Win32 result mapping boilerplate.

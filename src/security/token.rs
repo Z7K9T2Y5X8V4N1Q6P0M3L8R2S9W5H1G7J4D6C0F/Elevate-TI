@@ -11,8 +11,8 @@ use windows::{
             AdjustTokenPrivileges, DuplicateTokenEx, GetTokenInformation, ImpersonateLoggedOnUser,
             LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, RevertToSelf, SE_PRIVILEGE_ENABLED,
             SecurityImpersonation, SetTokenInformation, TOKEN_ACCESS_MASK, TOKEN_ADJUST_PRIVILEGES,
-            TOKEN_ALL_ACCESS, TOKEN_PRIVILEGES, TOKEN_QUERY, TokenImpersonation, TokenPrimary,
-            TokenSessionId,
+            TOKEN_ALL_ACCESS, TOKEN_GROUPS, TOKEN_INFORMATION_CLASS, TOKEN_PRIVILEGES, TOKEN_QUERY,
+            TOKEN_USER, TokenGroups, TokenImpersonation, TokenPrimary, TokenSessionId, TokenUser,
         },
         System::{
             SystemServices::MAXIMUM_ALLOWED,
@@ -24,7 +24,7 @@ use windows::{
     core::PCWSTR,
 };
 
-use super::{privilege::Privilege, win32};
+use super::{Sid, privilege::Privilege, win32};
 use crate::error::ElevateError;
 
 /// Target token type when duplicating an existing security token.
@@ -171,17 +171,42 @@ impl Token {
         Ok(ImpersonationGuard)
     }
 
-    /// Query raw token information bytes.
+    /// Retrieve the owner user SID string of this token.
+    pub fn user_sid(&self) -> Result<String, ElevateError> {
+        let buf = self.query_info_buffer(TokenUser)?;
+        // SAFETY: buf is pointer-aligned via Vec<usize> and populated by GetTokenInformation.
+        let user = unsafe { &*buf.as_ptr().cast::<TOKEN_USER>() };
+        Sid::string_from_raw(user.User.Sid)
+    }
+
+    /// Check whether this token holds membership in the specified string SID.
+    pub fn has_sid(&self, target_sid: PCWSTR) -> Result<bool, ElevateError> {
+        let target = Sid::parse(target_sid)?;
+        let buf = self.query_info_buffer(TokenGroups)?;
+        // SAFETY: buf is pointer-aligned via Vec<usize> and populated by GetTokenInformation.
+        let groups = unsafe { &*buf.as_ptr().cast::<TOKEN_GROUPS>() };
+
+        let slice = unsafe {
+            std::slice::from_raw_parts(groups.Groups.as_ptr(), groups.GroupCount as usize)
+        };
+        Ok(slice.iter().any(|g| Sid::equal(g.Sid, target.as_raw())))
+    }
+
+    /// Query raw token information into a pointer-aligned buffer.
     fn query_info_buffer(
         &self,
-        class: windows::Win32::Security::TOKEN_INFORMATION_CLASS,
-    ) -> Result<Vec<u8>, ElevateError> {
+        class: TOKEN_INFORMATION_CLASS,
+    ) -> Result<Vec<usize>, ElevateError> {
         let mut len = 0u32;
         let _ = unsafe { GetTokenInformation(self.0, class, None, 0, &raw mut len) };
         if len == 0 {
             return Err(ElevateError::InvalidTokenBuffer);
         }
-        let mut buf = vec![0u8; len as usize];
+
+        let usize_size = mem::size_of::<usize>();
+        let count = ((len as usize).saturating_add(usize_size - 1)) / usize_size;
+        let mut buf: Vec<usize> = vec![0; count];
+
         win32!(GetTokenInformation(
             self.0,
             class,

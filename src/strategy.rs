@@ -1,5 +1,9 @@
 //! Pluggable privilege elevation strategies.
 
+pub mod winlogon_ti;
+
+pub use winlogon_ti::TrustedInstallerStrategy;
+
 use crate::{error::ElevateError, security::Token};
 
 /// Contract for privilege elevation mechanisms.

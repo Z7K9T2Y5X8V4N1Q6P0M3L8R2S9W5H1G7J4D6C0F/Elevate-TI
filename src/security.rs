@@ -1,11 +1,13 @@
 //! Idiomatic, safe Win32 security primitives.
 
 pub mod privilege;
+pub mod service;
 pub mod sid;
 pub mod snapshot;
 pub mod token;
 
 pub use privilege::Privilege;
+pub use service::{Service, ServiceManager};
 pub use sid::Sid;
 pub use snapshot::ProcessSnapshot;
 pub use token::{ImpersonationGuard, Token, TokenType};

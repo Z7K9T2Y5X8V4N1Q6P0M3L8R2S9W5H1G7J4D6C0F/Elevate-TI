@@ -81,3 +81,20 @@ fn find_system_process(process_name: &str, session_id: u32) -> Result<u32, Eleva
 
     Err(ElevateError::ProcessNotFound(process_name.to_string()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_strategy_default_timeout() {
+        let strategy = TrustedInstallerStrategy::default();
+        assert_eq!(strategy.service_timeout, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn test_strategy_custom_timeout() {
+        let strategy = TrustedInstallerStrategy::with_timeout(Duration::from_secs(10));
+        assert_eq!(strategy.service_timeout, Duration::from_secs(10));
+    }
+}
